@@ -1,5 +1,5 @@
 {
-  "name": "volto",
+  "name": "@surlymochan/volto",
   "version": "0.0.1",
   "description": "volto — a control plane where AI bots work as a cast, each with its own role, memory, and knowledge. Name reserved; project forthcoming.",
   "main": "index.js",
