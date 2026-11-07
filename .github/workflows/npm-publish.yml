@@ -1,0 +1,18 @@
+name: npm-publish
+on:
+  workflow_dispatch:
+permissions:
+  id-token: write
+  contents: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Update npm (trusted publishing requires recent npm)
+        run: npm install -g npm@latest
+      - run: npm publish --provenance --access public

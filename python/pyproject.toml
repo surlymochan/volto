@@ -1,0 +1,14 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "volto"
+version = "0.0.1"
+description = "volto — a control plane where AI bots work as a cast, each with its own role, memory, and knowledge. Name reserved; project forthcoming."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["volto"]
