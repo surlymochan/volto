@@ -1,0 +1,13 @@
+model = "local-mock"
+model_provider = "localmock"
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[model_providers.localmock]
+name = "Local Mock"
+base_url = "http://127.0.0.1:8940/v1"
+wire_api = "responses"
+requires_openai_auth = false
+
+[projects."/root/work/volto"]
+trust_level = "trusted"

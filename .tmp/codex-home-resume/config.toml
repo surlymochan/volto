@@ -1,0 +1,10 @@
+model = "local-mock"
+model_provider = "localmock"
+approval_policy = "never"
+sandbox_mode = "read-only"
+
+[model_providers.localmock]
+name = "Local Mock"
+base_url = "http://127.0.0.1:8931/v1"
+wire_api = "responses"
+requires_openai_auth = false
