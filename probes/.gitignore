@@ -1,0 +1,3 @@
+# Raw probe transcripts and scratch space are never committed.
+out/
+.tmp/
