@@ -1,0 +1,25 @@
+{
+  "name": "@surlymochan/botd",
+  "version": "0.1.0",
+  "description": "volto bot daemon — runs bots on an executor host and speaks newline-delimited JSON frames",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "bin": {
+    "botd": "./src/cli.ts"
+  },
+  "scripts": {
+    "test": "node --test test",
+    "start": "node src/cli.ts serve"
+  },
+  "keywords": [
+    "volto",
+    "bot",
+    "daemon",
+    "acp",
+    "agent"
+  ]
+}
