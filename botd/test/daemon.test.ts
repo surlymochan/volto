@@ -11,6 +11,7 @@ import path from "node:path";
 
 import { Botd } from "../src/daemon.ts";
 import {
+  ANSWERING_CHILD,
   FAKE_CHILD,
   TestClient,
   delay,
@@ -228,6 +229,62 @@ test("escalates a cancel to a SIGKILL of the process group", async (t) => {
   assert.ok(elapsed >= 5000, `expected the kill after ~6s, got ${elapsed}ms`);
   assert.ok(elapsed <= 10_000, `expected the kill after ~6s, got ${elapsed}ms`);
   assert.ok(client.sinceMark(mark).length >= 2);
+});
+
+test("forwards the input again after the child answered a cancel", async (t) => {
+  const { daemon, client } = startHarness();
+  t.after(() => daemon.close());
+
+  await client.hello("client-a", 60_000);
+  client.send({
+    op: "open",
+    sid: "s1",
+    bot: { kind: "acp", command: [process.execPath, ANSWERING_CHILD] },
+  });
+  await client.waitFor((frame) => frame.op === "state" && frame.sid === "s1" && frame.state === "running", {
+    label: "the running state",
+  });
+
+  const mark = client.mark();
+  client.send({
+    op: "cancel",
+    sid: "s1",
+    payload: { jsonrpc: "2.0", method: "session/cancel", params: {} },
+  });
+  await client.waitFor((frame) => frame.op === "state" && frame.sid === "s1" && frame.state === "paused", {
+    label: "the paused state of the cancelled session",
+  });
+
+  // The child answers the cancel: the session is not cancelling any more.
+  await waitFor(() => daemon.sessionStatus("s1")?.cancelling === false, {
+    label: "the cancel to be answered",
+  });
+  await waitFor(
+    () =>
+      client
+        .sinceMark(mark)
+        .some((frame) => frame.op === "state" && frame.sid === "s1" && frame.state === "running"),
+    { label: "the running state after the cancel" },
+  );
+
+  // The next message is forwarded to the child and answered.
+  const sendMark = client.mark();
+  client.send({ op: "send", sid: "s1", payload: { cmd: "echo", text: "after the cancel" } });
+  await waitFor(
+    () =>
+      client
+        .sinceMark(sendMark)
+        .some(
+          (frame) =>
+            frame.op === "event" &&
+            JSON.stringify(frame.payload).includes("after the cancel"),
+        ),
+    { label: "the answer of the child" },
+  );
+  const errors = client
+    .sinceMark(sendMark)
+    .filter((frame) => frame.op === "error" && frame.code === "session_cancelling");
+  assert.deepEqual(errors, [], "the input must not be refused after an answered cancel");
 });
 
 test("reports a stalled session", async (t) => {

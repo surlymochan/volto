@@ -80,7 +80,7 @@ export class Session {
   hasOutput = false;
   /** True while the session is stalled (no output for too long). */
   stalled = false;
-  /** True while a cancel is being escalated. */
+  /** True while a cancel is waiting for an answer of the child. */
   cancelling = false;
   child: ChildProcessWithoutNullStreams | null = null;
 
@@ -89,6 +89,8 @@ export class Session {
   private stdoutBuffer = "";
   private timers = new Set<NodeJS.Timeout>();
   private cancelSatisfied = false;
+  /** The pending escalation timers of the current cancel. */
+  private cancelTimers: NodeJS.Timeout[] = [];
   private disposed = false;
 
   constructor(options: SessionOptions) {
@@ -164,6 +166,10 @@ export class Session {
    * The provider specific cancel message is sent to the child first. When the
    * child does not answer within `graceMs` it gets a SIGINT; when it still
    * does not answer `killGraceMs` later the whole process group is killed.
+   *
+   * A child that answers the cancel (it produces output again) ends the
+   * escalation: the session leaves the cancelling state and can be used
+   * again. A child that stays silent is escalated as described above.
    */
   requestCancel(
     payload: unknown,
@@ -172,21 +178,23 @@ export class Session {
     if (!this.isLive) return;
     this.cancelling = true;
     this.cancelSatisfied = false;
+    // A second cancel replaces the escalation of the first one.
+    this.clearCancelTimers();
     this.send(payload ?? defaultCancelMessage(this.bot.kind, this.providerSessionId));
     this.setState("paused");
 
-    this.addTimer(
-      setTimeout(() => {
+    const grace = setTimeout(() => {
+      if (this.cancelSatisfied || !this.isLive) return;
+      this.signalGroup("SIGINT");
+      const kill = setTimeout(() => {
         if (this.cancelSatisfied || !this.isLive) return;
-        this.signalGroup("SIGINT");
-        this.addTimer(
-          setTimeout(() => {
-            if (this.cancelSatisfied || !this.isLive) return;
-            this.signalGroup("SIGKILL");
-          }, options.killGraceMs),
-        );
-      }, options.graceMs),
-    );
+        this.signalGroup("SIGKILL");
+      }, options.killGraceMs);
+      this.cancelTimers.push(kill);
+      this.addTimer(kill);
+    }, options.graceMs);
+    this.cancelTimers.push(grace);
+    this.addTimer(grace);
   }
 
   /** Stop the child: SIGTERM first, SIGKILL for the group after the grace. */
@@ -211,6 +219,7 @@ export class Session {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.clearCancelTimers();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
     if (this.child) {
@@ -244,8 +253,25 @@ export class Session {
     this.progressAt = this.now();
     this.hasOutput = true;
     this.stalled = false;
-    if (this.cancelling) this.cancelSatisfied = true;
+    // The child answered the cancel: it produces output again. The state is
+    // cleared before the event goes out, so a client that answers the event
+    // with a new message is not refused any more.
+    if (this.cancelling) this.onCancelAnswered();
     this.hooks.onOutput(this, payload);
+  }
+
+  /**
+   * The child answered the cancel: it produces output again.
+   *
+   * The escalation stops, the session is not cancelling any more and its
+   * state goes back to running (the watchdog turns it into idle when the
+   * child falls silent).
+   */
+  private onCancelAnswered(): void {
+    this.cancelSatisfied = true;
+    this.cancelling = false;
+    this.clearCancelTimers();
+    this.setState("running");
   }
 
   private onStderr(chunk: string): void {
@@ -255,6 +281,9 @@ export class Session {
   }
 
   private onExit(): void {
+    // The child is gone: a pending cancel is over.
+    this.cancelling = false;
+    this.clearCancelTimers();
     // A trailing line without a newline is still an event.
     const rest = this.stdoutBuffer.trim();
     this.stdoutBuffer = "";
@@ -282,5 +311,14 @@ export class Session {
   private addTimer(timer: NodeJS.Timeout): void {
     this.timers.add(timer);
     timer.unref?.();
+  }
+
+  /** Drop the pending escalation timers of the current cancel. */
+  private clearCancelTimers(): void {
+    for (const timer of this.cancelTimers) {
+      clearTimeout(timer);
+      this.timers.delete(timer);
+    }
+    this.cancelTimers = [];
   }
 }

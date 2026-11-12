@@ -25,6 +25,11 @@ export function makeTempDir(prefix = "botd-"): string {
 /** Absolute path of the fake child fixture. */
 export const FAKE_CHILD = fileURLToPath(new URL("./fixtures/fake-child.mjs", import.meta.url));
 
+/** Absolute path of the fake child that answers every message. */
+export const ANSWERING_CHILD = fileURLToPath(
+  new URL("./fixtures/answering-child.mjs", import.meta.url),
+);
+
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
