@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>volto — Remote bots</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar" id="sidebar">
+        <header class="sidebar-head">
+          <div class="sidebar-titles">
+            <h1>Remote bots</h1>
+            <p class="sidebar-sub" id="status-line">starting…</p>
+          </div>
+          <button class="button button-quiet" id="host-add" data-testid="host-add" title="Add a host">
+            <span aria-hidden="true">+</span>
+            <span class="visually-hidden">Add host</span>
+          </button>
+        </header>
+        <ul class="host-list" id="host-list"></ul>
+      </aside>
+
+      <main class="main">
+        <section class="panel" id="bots-panel" aria-label="Bots"></section>
+        <section class="panel" id="stream-panel" aria-label="Session events"></section>
+      </main>
+    </div>
+
+    <dialog class="sheet" id="add-host-dialog" data-testid="host-add-dialog">
+      <form method="dialog" id="add-host-form">
+        <h2>Add host</h2>
+        <p class="sheet-hint">The host is reached over ssh, using the alias from your ssh config.</p>
+        <label class="field">
+          <span>SSH alias</span>
+          <input id="host-alias" data-testid="host-alias-input" name="alias" autocomplete="off" spellcheck="false" required />
+        </label>
+        <label class="field">
+          <span>Label <em>optional</em></span>
+          <input id="host-label" data-testid="host-label-input" name="label" autocomplete="off" spellcheck="false" />
+        </label>
+        <p class="field-error" id="host-add-error" data-testid="host-add-error" hidden></p>
+        <div class="sheet-actions">
+          <button class="button" value="cancel" id="host-add-cancel" data-testid="host-add-cancel">Cancel</button>
+          <button class="button button-primary" value="add" id="host-add-submit" data-testid="host-add-submit">Add host</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/app.js"></script>
+  </body>
+</html>
