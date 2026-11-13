@@ -7,11 +7,6 @@
 // clock is stubbed, and the mock client of src/mock-client.ts plays the
 // daemon.
 //
-// The behaviour of the panel as it is today is asserted as it is. The four
-// tests marked `todo` describe the behaviour the panel does not have yet;
-// the marker of each of them says what is missing. They fail on purpose and
-// are reported as todo, like the ones of test/screens.test.ts.
-//
 // The errors of the daemon are the ones of botd/PROTOCOL.md: a connection
 // that dies leaves the client with a transport error (botd/src/client.ts
 // rejects with "botd: transport closed"), which is what the failing polls
@@ -488,7 +483,7 @@ test("a failing tick leaves the panel mounted", async () => {
   await connectHost(panel, "alpha");
 
   client.listBotsError = new Error("botd: transport closed (EOF)");
-  await assert.rejects(() => panel.tick(), /transport closed/);
+  await panel.tick();
 
   assert.ok(findByTestId(element("host-list"), "host-alpha"), "the hosts are still drawn");
   assert.equal(panel.state.hosts.length, 1, "the panel still knows its host");
@@ -504,7 +499,7 @@ test("a failing tick does not stop the next tick", async () => {
   await connectHost(panel, "alpha");
 
   client.listBotsError = new Error("botd: transport closed (EOF)");
-  await assert.rejects(() => panel.tick(), /transport closed/);
+  await panel.tick();
 
   client.listBotsError = null;
   const before = client.listBotsCalls;
@@ -533,11 +528,10 @@ test("destroying the panel stops the session subscriptions", async () => {
   assert.equal(client.unsubscribeCalls, 1, "the panel gave up the subscription of the session");
 });
 
-/* ------------------------------------------------------------ what is missing */
+/* ------------------------------------------------------- polling guarantees */
 
 test(
   "a tick refreshes the hosts of the daemon",
-  { todo: "the panel loads the hosts once at the mount; a tick refreshes the bots only" },
   async () => {
     buildPage();
     const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
@@ -556,7 +550,6 @@ test(
 
 test(
   "a failing tick shows the error in the status line",
-  { todo: "the panel never dispatches error/set, so a rejected tick leaves the status line as it was" },
   async () => {
     buildPage();
     const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
@@ -565,7 +558,7 @@ test(
     await connectHost(panel, "alpha");
 
     client.listBotsError = new Error("botd: transport closed (EOF)");
-    await panel.tick().catch(() => {});
+    await panel.tick();
 
     assert.match(
       textOf(element("status-line")),
@@ -579,7 +572,6 @@ test(
 
 test(
   "a tick that overlaps another one does not refresh the bots twice",
-  { todo: "the panel has no single flight guard: every tick refreshes the bots on its own" },
   async () => {
     buildPage();
     const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
@@ -588,7 +580,10 @@ test(
     await connectHost(panel, "alpha");
 
     const before = client.listBotsCalls;
-    await Promise.all([panel.tick(), panel.tick()]);
+    const first = panel.tick();
+    const second = panel.tick();
+    assert.equal(first, second, "overlapping ticks share the same promise");
+    await Promise.all([first, second]);
 
     assert.equal(
       client.listBotsCalls - before,
@@ -602,7 +597,6 @@ test(
 
 test(
   "a host that goes away while the panel polls shows the error state",
-  { todo: "a failed poll rejects the tick; the panel does not mark the host as failed" },
   async () => {
     buildPage();
     const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
@@ -613,7 +607,7 @@ test(
     // the daemon drops the host while the panel polls it
     await client.inner.disconnect("alpha");
     client.listBotsError = new Error("botd: transport closed (EOF)");
-    await panel.tick().catch(() => {});
+    await panel.tick();
 
     const host = panel.state.hosts.find((entry) => entry.alias === "alpha");
     assert.equal(host?.status, "error", "the host is marked as failed");
@@ -624,3 +618,71 @@ test(
     panel.destroy();
   },
 );
+
+
+test("a successful tick clears a poll error and restores the host", async () => {
+  buildPage();
+  const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
+  const panel = createPanel({ client, pollMs: 0 });
+  await panel.mount();
+  await connectHost(panel, "alpha");
+  client.listBotsError = new Error("offline");
+  await panel.tick();
+  assert.equal(panel.state.hosts[0].status, "error");
+  client.listBotsError = null;
+  await panel.tick();
+  assert.equal(panel.state.error, null);
+  assert.equal(panel.state.hosts[0].status, "connected");
+  assert.equal(panel.state.hosts[0].error, null);
+  panel.destroy();
+});
+
+test("destroy during a tick prevents later state changes and subscriptions", async () => {
+  buildPage();
+  const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
+  const panel = createPanel({ client, pollMs: 0 });
+  await panel.mount();
+  await connectHost(panel, "alpha");
+  let release!: (hosts: RemoteHost[]) => void;
+  client.listHosts = () => new Promise((resolve) => { release = resolve; });
+  const tick = panel.tick();
+  panel.destroy();
+  const state = panel.state;
+  const subscriptions = client.subscribeCalls.length;
+  release([{ alias: "other" }]);
+  await tick;
+  assert.equal(panel.state, state);
+  assert.equal(client.subscribeCalls.length, subscriptions);
+});
+
+test("poll error text contains the message without the stack", async () => {
+  buildPage();
+  const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
+  const panel = createPanel({ client, pollMs: 0 });
+  await panel.mount();
+  await connectHost(panel, "alpha");
+  client.listBotsError = new Error("transport closed");
+  await panel.tick();
+  assert.equal(textOf(element("status-line")), "transport closed");
+  assert.equal(panel.state.hosts[0].error, "transport closed");
+  panel.destroy();
+});
+
+
+test("a host-list failure is reported and the next tick recovers", async () => {
+  buildPage();
+  const client = new CountingClient(new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }));
+  const panel = createPanel({ client, pollMs: 0 });
+  await panel.mount();
+  await connectHost(panel, "alpha");
+  const listHosts = client.listHosts.bind(client);
+  client.listHosts = async () => { throw new Error("host list unavailable"); };
+  await panel.tick();
+  assert.equal(panel.state.error, "host list unavailable");
+  assert.equal(panel.state.hosts[0].status, "error");
+  client.listHosts = listHosts;
+  await panel.tick();
+  assert.equal(panel.state.error, null);
+  assert.equal(panel.state.hosts[0].status, "connected");
+  panel.destroy();
+});
