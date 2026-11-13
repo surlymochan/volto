@@ -23,7 +23,7 @@ function requestApproval(adapter: CodexAdapter, id: number): string {
   return event.id;
 }
 
-test("cancel drops a pending approval so a late allow returns null", () => {
+test("cancel keeps a pending approval but a late allow returns null", () => {
   const adapter = new CodexAdapter();
   startTurn(adapter);
   const id = requestApproval(adapter, 11);
@@ -44,7 +44,7 @@ test("approvals raised after cancel remain answerable", () => {
   assert.deepEqual(adapter.answerPermission(id, true), { id: 12, result: { decision: "accept" } });
 });
 
-test("cancel without a known turn drops pending approvals and returns no messages", () => {
+test("cancel without a known turn still blocks a late allow and returns no messages", () => {
   const adapter = new CodexAdapter();
   const id = requestApproval(adapter, 13);
 
@@ -52,13 +52,13 @@ test("cancel without a known turn drops pending approvals and returns no message
   assert.equal(adapter.answerPermission(id, true), null);
 });
 
-test("cancel drops all pending approvals", () => {
+test("cancel blocks a late allow for all pending approvals, a late deny still declines", () => {
   const adapter = new CodexAdapter();
   startTurn(adapter);
   const first = requestApproval(adapter, 14);
   const second = requestApproval(adapter, 15);
 
   adapter.cancel({ providerSessionId: THREAD_ID });
-  assert.equal(adapter.answerPermission(first, false), null);
+  assert.deepEqual(adapter.answerPermission(first, false), { id: 14, result: { decision: "decline" } });
   assert.equal(adapter.answerPermission(second, true), null);
 });

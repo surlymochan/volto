@@ -53,6 +53,8 @@ const APPROVAL_METHODS = new Set([
 ]);
 
 type PermissionRequest = {
+  /** True once the turn of the request was cancelled: it may no longer be allowed. */
+  cancelled?: boolean;
   /** Id as sent on the wire (string or number). */
   wireId: string | number;
   /** Request method; decides the shape of the response. */
@@ -241,7 +243,9 @@ export class CodexAdapter implements BotAdapter {
    * the thread id and the turn id, so nothing is sent when no turn is known.
    */
   cancel(ctx: { providerSessionId?: string }): unknown[] {
-    this.#pendingApprovals.clear();
+    // A cancelled turn may no longer allow a pending approval: it stays
+    // known, but from now on it can only be declined.
+    for (const request of this.#pendingApprovals.values()) request.cancelled = true;
     const threadId = ctx.providerSessionId ?? this.#lastSessionId;
     const turnId = threadId ? this.#turnByThread.get(threadId) : undefined;
     if (!threadId || !turnId) return [];
@@ -262,6 +266,8 @@ export class CodexAdapter implements BotAdapter {
     const pending = this.#pendingApprovals.get(id);
     if (!pending) return null;
     this.#pendingApprovals.delete(id);
+    // A late allow of a cancelled turn is never honored; a late deny still is.
+    if (pending.cancelled && allow) return null;
 
     switch (pending.method) {
       case "item/commandExecution/requestApproval":
