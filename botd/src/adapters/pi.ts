@@ -82,6 +82,8 @@ interface UiRequest {
   method: string;
   /** Options of a `select` request, in the order pi offered them. */
   options: unknown[];
+  /** True when the run of the request was cancelled: it may not be granted. */
+  cancelled: boolean;
 }
 
 export class PiAdapter implements BotAdapter {
@@ -171,8 +173,15 @@ export class PiAdapter implements BotAdapter {
   /**
    * Provider-native cancel: `abort` stops the running prompt.  The run then
    * ends with the stop reason `aborted` (see probes/REPORT.md).
+   *
+   * The pending extension UI requests of the run belong to a turn the user
+   * gave up, so they are marked: a late answer of the control plane must not
+   * allow them any more.
    */
   cancel(_ctx: { providerSessionId?: string }): unknown[] {
+    for (const request of this.#uiRequests.values()) {
+      request.cancelled = true;
+    }
     return [this.#command("abort")];
   }
 
@@ -180,17 +189,25 @@ export class PiAdapter implements BotAdapter {
    * Answer an extension UI request.  Only `confirm` and `select` are
    * approvals; the free form `input`/`editor` requests and the `notify`
    * messages are not answerable by a boolean policy.
+   *
+   * The request of a cancelled run is never granted: a late allow answers
+   * nothing, a late deny denies the request as usual.
    */
   answerPermission(id: string, allow: boolean): unknown | null {
     const request = this.#uiRequests.get(id);
     if (!request) return null;
     this.#uiRequests.delete(id);
 
+    if (request.cancelled) {
+      // The run of the request was cancelled: it must not be granted.
+      return allow ? null : denyRequest(id, request);
+    }
+
     if (request.method === "confirm") {
       return { type: "extension_ui_response", id, confirmed: allow };
     }
     if (request.method === "select") {
-      if (!allow) return { type: "extension_ui_response", id, cancelled: true };
+      if (!allow) return denyRequest(id, request);
       const value = firstOptionValue(request.options);
       if (value === undefined) return null;
       return { type: "extension_ui_response", id, value };
@@ -398,7 +415,7 @@ export class PiAdapter implements BotAdapter {
       return [{ kind: "raw", payload: record }];
     }
 
-    this.#uiRequests.set(id, { method, options: optionValues(record) });
+    this.#uiRequests.set(id, { method, options: optionValues(record), cancelled: false });
     // Keep the cache bounded for long running daemons.
     while (this.#uiRequests.size > MAX_PENDING_UI_REQUESTS) {
       const oldest = this.#uiRequests.keys().next();
@@ -573,6 +590,14 @@ function optionValues(record: Record<string, unknown>): unknown[] {
     if (value !== undefined) values.push(value);
   }
   return values;
+}
+
+/** The answer that denies an extension UI request. */
+function denyRequest(id: string, request: UiRequest): Record<string, unknown> {
+  if (request.method === "select") {
+    return { type: "extension_ui_response", id, cancelled: true };
+  }
+  return { type: "extension_ui_response", id, confirmed: false };
 }
 
 /** The value of the first offered option. */
