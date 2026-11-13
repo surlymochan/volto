@@ -6,11 +6,13 @@
  * children stay alive but no input is forwarded); when it expires twice the
  * children are terminated.
  *
- * Every lease carries a fence. A `hello` from a different client bumps the
- * fence, so frames of the previous client are rejected instead of silently
- * interleaving with the new one.
+ * Every lease carries a fence. A takeover bumps the fence, so frames of the
+ * previous client are rejected instead of interleaving with the new one.
  */
 import { randomUUID } from "node:crypto";
+
+/** Maximum lease TTL: one year in milliseconds. */
+export const MAX_TTL_MS = 365 * 24 * 60 * 60 * 1000;
 
 /** State of the lease at a given point in time. */
 export type LeaseState = "none" | "ok" | "paused" | "dead";
@@ -64,8 +66,8 @@ export class LeaseManager {
    * Take (or take over) the lease.
    *
    * The same client may reconnect and keeps its fence; a different client
-   * takes the lease over and bumps the fence, which invalidates every frame
-   * of the previous client.
+   * can take an expired lease over and bumps the fence, which invalidates
+   * every frame of the previous client.
    */
   hello(clientId: string, ttlMs?: number): LeaseResult<Lease> {
     const now = this.options.now();
@@ -73,6 +75,9 @@ export class LeaseManager {
     if (this.lease && this.lease.clientId === clientId) {
       this.lease = this.extend(this.lease, now, ttl);
       return { ok: true, value: this.lease };
+    }
+    if (this.lease && this.state(now) === "ok") {
+      return { ok: false, code: "lease_conflict", message: "lease is held by another client" };
     }
     this.fenceCounter += 1;
     this.lease = {
@@ -103,7 +108,11 @@ export class LeaseManager {
     if (leaseId !== lease.leaseId) {
       return { ok: false, code: "stale_lease", message: `unknown lease ${leaseId}` };
     }
-    this.lease = this.extend(lease, this.options.now(), lease.ttlMs);
+    const now = this.options.now();
+    if (now >= lease.pauseAt) {
+      return { ok: false, code: "lease_expired", message: "lease has expired" };
+    }
+    this.lease = this.extend(lease, now, lease.ttlMs);
     return { ok: true, value: this.lease };
   }
 
@@ -133,7 +142,7 @@ export class LeaseManager {
   }
 
   private resolveTtl(ttlMs: number | undefined): number {
-    if (ttlMs === undefined || !Number.isFinite(ttlMs)) return this.options.defaultTtlMs;
-    return Math.max(this.options.minTtlMs, ttlMs);
+    const ttl = ttlMs === undefined || !Number.isFinite(ttlMs) ? this.options.defaultTtlMs : ttlMs;
+    return Math.min(MAX_TTL_MS, Math.max(this.options.minTtlMs, ttl));
   }
 }

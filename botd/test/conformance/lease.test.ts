@@ -40,7 +40,9 @@ test("answers a renew without a lease with no_lease", async (t) => {
 });
 
 test("gives the takeover a higher fence and a new lease id", async (t) => {
-  const { daemon } = startHarness();
+  // Round 2: a takeover needs an expired lease; the test moves the daemon clock.
+  const clock = { value: Date.now() };
+  const { daemon } = startHarness({ now: () => clock.value });
   t.after(() => daemon.close());
   const first = new RawClient(daemon);
   const second = new RawClient(daemon);
@@ -48,6 +50,7 @@ test("gives the takeover a higher fence and a new lease id", async (t) => {
   first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
   const helloA = await first.waitForOp("hello");
 
+  clock.value += 60_000;
   second.send({ op: "hello", clientId: "client-b", leaseTtlMs: 60_000 });
   const helloB = await second.waitForOp("hello");
 
@@ -55,6 +58,21 @@ test("gives the takeover a higher fence and a new lease id", async (t) => {
   // a new lease id and a higher fence.
   assert.ok(helloB.fence > helloA.fence, "the fence of the takeover is not higher");
   assert.notEqual(helloB.leaseId, helloA.leaseId, "the lease id did not change");
+});
+
+test("refuses a second holder while the lease is ok with lease_conflict", async (t) => {
+  const { daemon } = startHarness();
+  t.after(() => daemon.close());
+  const first = new RawClient(daemon);
+  const second = new RawClient(daemon);
+
+  first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
+  await first.waitForOp("hello");
+
+  // PROTOCOL.md §3: a live lease is not taken over.
+  second.send({ op: "hello", clientId: "client-b", leaseTtlMs: 60_000 });
+  const error = await second.waitForError("lease_conflict");
+  assert.equal(error.op, "error");
 });
 
 test("keeps the lease and the fence of a client that reconnects", async (t) => {
@@ -76,13 +94,16 @@ test("keeps the lease and the fence of a client that reconnects", async (t) => {
 });
 
 test("refuses the frames of the client that lost the fence with stale_fence", async (t) => {
-  const { daemon } = startHarness();
+  // Round 2: a takeover needs an expired lease; the test moves the daemon clock.
+  const clock = { value: Date.now() };
+  const { daemon } = startHarness({ now: () => clock.value });
   t.after(() => daemon.close());
   const first = new RawClient(daemon);
   const second = new RawClient(daemon);
 
   first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
   const helloA = await first.waitForOp("hello");
+  clock.value += 60_000;
   second.send({ op: "hello", clientId: "client-b", leaseTtlMs: 60_000 });
   await second.waitForOp("hello");
 
@@ -163,7 +184,8 @@ test("answers hello with the effective ttl", async (t) => {
   const hello = await client.waitForOp("hello");
   assert.equal(hello.leaseTtlMs, 250);
 
-  client.send({ op: "hello", clientId: "client-b", leaseTtlMs: 60_000 });
+  // Round 2: another client would get lease_conflict while the lease is ok; the same client may re-hello with a new ttl.
+  client.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
   const second = await client.waitFor((frame) => frame.op === "hello" && frame.leaseTtlMs === 60_000, {
     label: "the hello answer of the second client",
   });
