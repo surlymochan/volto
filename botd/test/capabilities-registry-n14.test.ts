@@ -18,16 +18,33 @@ function stripComments(source: string): string {
 const registrySource = stripComments(readFileSync(new URL("../src/adapters/index.ts", import.meta.url), "utf8"));
 const registryBody = registrySource.match(/export function getAdapter\([^]*?\n}\n/);
 assert.ok(registryBody, "getAdapter registry was not found");
-// Labels may use any quote style, be empty, or share a line (`case "a": case "b":`); empty ones
-// are kept so the identifier checks below reject them.
-const registryKinds = [...registryBody[0].matchAll(/\bcase\s+(["'`])((?:\\.|(?!\1)[^\\])*)\1\s*:/g)]
-  .map((match) => match[2]);
+const LITERAL = /^(["'`])((?:\\.|(?!\1)[^\\$])*)\1$/;
+// Every case label, whatever its expression: string-aware so `case "a:b":` is one label.
+const caseLabels = [...registryBody[0].matchAll(
+  /\bcase\s+((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|[^:"'`])+?)\s*:/g,
+)].map((match) => match[1].trim());
+// Labels may use any quote style, be empty, or share a line; empty ones are kept so the identifier
+// checks below reject them. Labels that are not plain string literals are rejected by their own test.
+const registryKinds = caseLabels.flatMap((label) => {
+  const literal = LITERAL.exec(label);
+  return literal ? [literal[2]] : [];
+});
 const capabilityKinds = ADAPTER_CAPABILITIES.map((row) => row.kind);
 
 test("commented-out cases are not counted, literals containing slashes are kept", () => {
   const stripped = stripComments('switch (k) {\n  // case "a":\n  /* case "b": */\n  case "c": return "//x";\n}');
   assert.deepEqual([...stripped.matchAll(/\bcase\s+"([^"]*)"\s*:/g)].map((match) => match[1]), ["c"]);
   assert.ok(stripped.includes('"//x"'));
+});
+
+test("every registry case label is a plain string literal", () => {
+  assert.deepEqual(caseLabels.filter((label) => !LITERAL.test(label)), []);
+});
+
+test("case labels that are constants or expressions are detected, not skipped", () => {
+  const body = 'switch (k) { case KIND_X: return 1; case "a" + "b": return 2; case `t${v}`: return 3; case "ok": return 4; }';
+  const labels = [...body.matchAll(/\bcase\s+((?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|[^:"'`])+?)\s*:/g)].map((m) => m[1].trim());
+  assert.deepEqual(labels.filter((label) => !LITERAL.test(label)), ["KIND_X", '"a" + "b"', "`t${v}`"]);
 });
 
 test("each registry case has a capability row", () => {
