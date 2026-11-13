@@ -12,7 +12,7 @@
         <header class="sidebar-head">
           <div class="sidebar-titles">
             <h1>Remote bots</h1>
-            <p class="sidebar-sub" id="status-line">starting…</p>
+            <p class="sidebar-sub" id="status-line" aria-live="polite">starting…</p>
           </div>
           <button class="button button-quiet" id="host-add" data-testid="host-add" title="Add a host">
             <span aria-hidden="true">+</span>
@@ -48,6 +48,14 @@
       </form>
     </dialog>
 
-    <script type="module" src="/src/app.js"></script>
+    <!--
+      The panel talks to the relay that serves this page. Open the page with
+      ?mock=1 to work on it without a relay, ?relay=<url> to name one.
+    -->
+    <script type="module">
+      import { boot } from "/src/app.js";
+
+      void boot();
+    </script>
   </body>
 </html>
