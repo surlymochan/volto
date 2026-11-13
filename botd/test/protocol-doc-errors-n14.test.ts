@@ -39,13 +39,29 @@ function headings(markdown: string): string[] {
   return result;
 }
 
+/**
+ * Text of an object type declaration at brace depth 1 only: the members of each top-level
+ * `{ ... }`, without the contents of nested objects, so `op` is found in any position
+ * but a nested `{ op: ... }` payload is not mistaken for the frame's own `op`.
+ */
+function topLevelMembers(declaration: string): string {
+  let depth = 0;
+  let out = "";
+  for (const char of declaration) {
+    if (char === "{") { depth++; if (depth === 1) out += "{"; continue; }
+    if (char === "}") { if (depth === 1) out += "}"; depth--; continue; }
+    if (depth === 1) out += char;
+  }
+  return out;
+}
+
 /** Exported `*Frame` types whose declaration has an object member with an `op` property, at any position. */
 function frameTypes(source: string): string[] {
   const heads = [...source.matchAll(/\bexport\s+type\s+(\w*Frame)\s*=/g)];
   return heads.filter((head) => {
     const rest = source.slice((head.index as number) + head[0].length);
     const end = rest.search(/^(?:export\s+|declare\s+)?(?:type|interface|const|let|function|class)\b/m);
-    return /\{[^{}]*?\b(?:readonly\s+)?op\??\s*:/.test(end === -1 ? rest : rest.slice(0, end));
+    return /\{[^{}]*?\b(?:readonly\s+)?op\??\s*:/.test(topLevelMembers(end === -1 ? rest : rest.slice(0, end)));
   }).map((head) => head[1] as string);
 }
 
@@ -75,6 +91,8 @@ test("the names of wire frame types are documented", () => {
 test("finds frame types whose op property is not the first member", () => {
   assert.deepEqual(frameTypes(`export type LateFrame = { sid: string; op: "late" };
     export type PlainFrame = { sid: string };`), ["LateFrame"]);
+  assert.deepEqual(frameTypes(`export type NestedFrame = { payload: { id: string }; op: "nested" };
+    export type InnerOnlyFrame = { payload: { op: string } };`), ["NestedFrame"]);
 });
 
 test("heading extraction ignores fenced examples and normalizes headings", () => {
