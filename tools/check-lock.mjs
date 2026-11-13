@@ -21,7 +21,17 @@
 //     listed in the lock root entry (packages[""]) with a matching range;
 //   * the lock root entry declares exactly the same dependencies;
 //   * every declared dependency has a resolved entry in the lock tree whose
-//     version satisfies the declared range.
+//     version satisfies the declared range;
+//   * every entry of the lock tree ("packages") can resolve the packages it
+//     depends on: its dependencies, its peer dependencies (the ones that are
+//     not optional) and its optional dependencies.
+//
+// The last point matters as much as the first three: a lockfile that lost an
+// entry in the middle of the tree - typically an optional platform package -
+// still describes the root correctly and still passes a root-only check, yet
+// `npm ci` refuses to install from it:
+//
+//   npm error Missing: <pkg> from lock file
 //
 // A mismatch is reported together with the command that repairs it:
 //
@@ -404,8 +414,147 @@ function rangesAgree(declared, locked, resolved) {
 // --- the check -------------------------------------------------------------
 
 /**
- * @typedef {{ section?: string, name?: string, message: string }} Problem
+ * @typedef {{ section?: string, name?: string, package?: string, message: string }} Problem
  */
+
+/**
+ * The dependency sections of a lock entry that npm resolves from.
+ *
+ * `devDependencies` are not among them: npm installs the dev dependencies of
+ * the project itself, not the ones of every package in the tree.
+ */
+const LOCK_ENTRY_SECTIONS = ["dependencies", "optionalDependencies"];
+
+/**
+ * Derives the name of the package a lock entry describes.
+ *
+ * @param {unknown} entry
+ * @param {string} path
+ * @returns {string}
+ */
+function entryName(entry, path) {
+  if (typeof /** @type {any} */ (entry)?.name === "string") {
+    return /** @type {any} */ (entry).name;
+  }
+  const index = path.lastIndexOf("node_modules/");
+  return index === -1 ? path : path.slice(index + "node_modules/".length);
+}
+
+/**
+ * Resolves a dependency the way Node does: the closest node_modules first,
+ * then the node_modules of every ancestor directory.
+ *
+ * @param {Record<string, unknown>} packages
+ * @param {string} fromPath the lock path of the package that needs the dependency
+ * @param {string} name
+ * @returns {string | null} the lock path that provides the dependency
+ */
+export function resolveDependency(packages, fromPath, name) {
+  let prefix = fromPath;
+  for (;;) {
+    const candidate = prefix === "" ? `node_modules/${name}` : `${prefix}/node_modules/${name}`;
+    if (Object.hasOwn(packages, candidate)) return candidate;
+    if (prefix === "") return null;
+    const index = prefix.lastIndexOf("/node_modules/");
+    prefix = index === -1 ? "" : prefix.slice(0, index);
+  }
+}
+
+/**
+ * Collects the dependencies a lock entry declares.
+ *
+ * A peer dependency that the entry marks as optional is skipped: npm does not
+ * install it, so the lock does not have to hold it.
+ *
+ * @param {unknown} entry
+ * @returns {{ section: string, name: string, spec: string }[]}
+ */
+function entryDependencies(entry) {
+  /** @type {{ section: string, name: string, spec: string }[]} */
+  const collected = [];
+
+  for (const section of LOCK_ENTRY_SECTIONS) {
+    const declared = /** @type {any} */ (entry)?.[section];
+    if (!declared || typeof declared !== "object") continue;
+    for (const [name, spec] of Object.entries(declared)) {
+      collected.push({ section, name, spec: String(spec) });
+    }
+  }
+
+  const peers = /** @type {any} */ (entry)?.peerDependencies;
+  const peerMeta = /** @type {any} */ (entry)?.peerDependenciesMeta;
+  if (peers && typeof peers === "object") {
+    for (const [name, spec] of Object.entries(peers)) {
+      if (peerMeta?.[name]?.optional === true) continue;
+      collected.push({ section: "peerDependencies", name, spec: String(spec) });
+    }
+  }
+
+  return collected;
+}
+
+/**
+ * Renders the message for a dependency that no entry of the lock tree
+ * provides.
+ *
+ * @param {string} section
+ * @param {string} name
+ * @param {string} spec
+ * @param {string} owner
+ * @returns {string}
+ */
+function missingEntryMessage(section, name, spec, owner) {
+  const kind =
+    section === "optionalDependencies"
+      ? "an optional dependency"
+      : section === "peerDependencies"
+        ? "a peer dependency"
+        : "a dependency";
+  const note =
+    section === "optionalDependencies"
+      ? " - an optional platform package has to be in the lock even when the current platform does not install it"
+      : "";
+  return (
+    `the lock file has no entry for "${name}@${spec}", ${kind} of "${owner}"; ` +
+    `npm ci fails with "Missing: ${name} from lock file"${note}`
+  );
+}
+
+/**
+ * Checks that every dependency declared by an entry of the lock tree can be
+ * resolved inside that tree.
+ *
+ * The root entry is left out: it is compared with the manifest instead, and
+ * a root dependency that has no entry is reported there.
+ *
+ * @param {unknown} lock
+ * @returns {Problem[]}
+ */
+export function checkLockTree(lock) {
+  const packages = /** @type {Record<string, any>} */ (
+    /** @type {any} */ (lock)?.packages ?? {}
+  );
+  /** @type {Problem[]} */
+  const problems = [];
+
+  for (const [path, entry] of Object.entries(packages)) {
+    if (path === "") continue;
+    const version = typeof entry?.version === "string" ? `@${entry.version}` : "";
+    const owner = `${entryName(entry, path)}${version}`;
+
+    for (const dependency of entryDependencies(entry)) {
+      if (resolveDependency(packages, path, dependency.name)) continue;
+      problems.push({
+        section: dependency.section,
+        name: dependency.name,
+        package: path,
+        message: missingEntryMessage(dependency.section, dependency.name, dependency.spec, owner),
+      });
+    }
+  }
+
+  return problems;
+}
 
 /**
  * Checks one manifest against one lockfile.
@@ -498,6 +647,10 @@ export function checkManifestAgainstLock(manifest, lock) {
       }
     }
   }
+
+  // The root is in sync with the manifest; the rest of the tree has to
+  // resolve on its own.
+  problems.push(...checkLockTree(lock));
 
   return problems;
 }

@@ -7,21 +7,58 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
   REPAIR_COMMAND,
+  checkLockTree,
   checkManifestAgainstLock,
   checkRepository,
   formatReport,
+  resolveDependency,
   satisfies,
 } from "../check-lock.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "..", "check-lock.mjs");
+const fixtures = join(here, "fixtures");
+
+/**
+ * Reads one of the synthetic lockfile fixtures.
+ *
+ * @param {string} name
+ * @returns {any}
+ */
+function readFixture(name) {
+  return JSON.parse(readFileSync(join(fixtures, name), "utf8"));
+}
+
+/**
+ * The manifest of the fixture locks below: it depends on one package that
+ * pulls in a nested dependency, an optional platform package and a peer
+ * dependency.
+ *
+ * The fixture files are the two failure cases of the review: a lock that lost
+ * an entry in the middle of the tree and a lock that lost an optional
+ * platform package. All the names below are synthetic.
+ */
+const TREE_MANIFEST = {
+  name: "@example/agent-app",
+  version: "0.1.0",
+  dependencies: {
+    "@example/agent": "^1.0.0",
+  },
+};
+
+/** A lock tree that resolves completely. */
+const GOOD_TREE_LOCK = readFixture("good-lock.json");
+/** A lock tree that lost the entry of a dependency in the middle. */
+const BAD_MISSING_DEPENDENCY_LOCK = readFixture("bad-lock-missing-dependency.json");
+/** A lock tree that lost the entry of an optional platform package. */
+const BAD_MISSING_PLATFORM_LOCK = readFixture("bad-lock-missing-platform-package.json");
 
 // Scratch space for the fixtures, inside the worktree.
 const scratch = join(here, ".tmp");
@@ -246,6 +283,110 @@ test("a repository with a stale lockfile fails and names the repair command", ()
 
 test("the command exits with zero when every lockfile is in sync", () => {
   const root = writeTree([{ manifest: GOOD_MANIFEST, lock: GOOD_LOCK, name: "app" }]);
+  try {
+    const run = spawnSync(process.execPath, [script, "--root", root], { encoding: "utf8" });
+    assert.equal(run.status, 0);
+    assert.match(run.stdout, /lock check: ok/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// --- the lock tree ---------------------------------------------------------
+
+test("a dependency is resolved from the closest node_modules first", () => {
+  const packages = GOOD_TREE_LOCK.packages;
+
+  assert.equal(
+    resolveDependency(packages, "node_modules/@example/agent", "@example/agent-core"),
+    "node_modules/@example/agent/node_modules/@example/agent-core",
+  );
+  assert.equal(
+    resolveDependency(packages, "node_modules/@example/agent", "@example/agent-runtime"),
+    "node_modules/@example/agent-runtime",
+  );
+  assert.equal(
+    resolveDependency(packages, "node_modules/@example/agent", "@example/agent-nowhere"),
+    null,
+  );
+});
+
+test("a complete lock tree passes the check", () => {
+  assert.deepEqual(checkLockTree(GOOD_TREE_LOCK), []);
+  assert.deepEqual(checkManifestAgainstLock(TREE_MANIFEST, GOOD_TREE_LOCK), []);
+});
+
+test("a dependency missing from the middle of the tree is reported", () => {
+  const problems = checkLockTree(BAD_MISSING_DEPENDENCY_LOCK);
+
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].name, "@example/agent-runtime");
+  assert.equal(problems[0].section, "dependencies");
+  assert.match(problems[0].message, /no entry for "@example\/agent-runtime@\^1\.0\.0"/);
+  assert.match(problems[0].message, /a dependency of "@example\/agent@1\.0\.0"/);
+  assert.match(problems[0].message, /Missing: @example\/agent-runtime from lock file/);
+});
+
+test("an optional platform package missing from the tree is reported", () => {
+  const problems = checkLockTree(BAD_MISSING_PLATFORM_LOCK);
+
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].name, "@example/agent-linux-x64-gnu");
+  assert.equal(problems[0].section, "optionalDependencies");
+  assert.match(problems[0].message, /no entry for "@example\/agent-linux-x64-gnu@1\.0\.0"/);
+  assert.match(problems[0].message, /an optional dependency of "@example\/agent@1\.0\.0"/);
+  assert.match(problems[0].message, /Missing: @example\/agent-linux-x64-gnu from lock file/);
+});
+
+test("the broken lock trees fail the manifest check as well", () => {
+  for (const lock of [BAD_MISSING_DEPENDENCY_LOCK, BAD_MISSING_PLATFORM_LOCK]) {
+    const problems = checkManifestAgainstLock(TREE_MANIFEST, lock);
+    assert.equal(problems.length, 1);
+  }
+});
+
+test("an optional peer dependency does not have to be in the lock", () => {
+  const lock = structuredClone(GOOD_TREE_LOCK);
+  lock.packages["node_modules/@example/agent"].peerDependenciesMeta = {
+    "@example/agent-peer": { optional: true },
+  };
+  delete lock.packages["node_modules/@example/agent-peer"];
+
+  assert.deepEqual(checkLockTree(lock), []);
+});
+
+test("a missing peer dependency is reported", () => {
+  const lock = structuredClone(GOOD_TREE_LOCK);
+  delete lock.packages["node_modules/@example/agent-peer"];
+
+  const problems = checkLockTree(lock);
+
+  assert.equal(problems.length, 1);
+  assert.equal(problems[0].section, "peerDependencies");
+  assert.match(problems[0].message, /no entry for "@example\/agent-peer@\^3\.0\.0"/);
+  assert.match(problems[0].message, /a peer dependency of "@example\/agent@1\.0\.0"/);
+});
+
+test("the report names the package that is missing from the lock tree", () => {
+  const root = writeTree([
+    { manifest: TREE_MANIFEST, lock: BAD_MISSING_PLATFORM_LOCK, name: "app" },
+  ]);
+  try {
+    const result = checkRepository(root);
+    assert.equal(result.problems.length, 1);
+
+    const run = spawnSync(process.execPath, [script, "--root", root], { encoding: "utf8" });
+    assert.equal(run.status, 1);
+    assert.match(run.stdout, /@example\/agent-linux-x64-gnu/);
+    assert.match(run.stdout, /Missing: @example\/agent-linux-x64-gnu from lock file/);
+    assert.match(run.stdout, /npm install --package-lock-only --include=optional/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the command exits with zero when the lock tree is complete", () => {
+  const root = writeTree([{ manifest: TREE_MANIFEST, lock: GOOD_TREE_LOCK, name: "app" }]);
   try {
     const run = spawnSync(process.execPath, [script, "--root", root], { encoding: "utf8" });
     assert.equal(run.status, 0);
