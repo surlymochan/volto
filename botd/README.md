@@ -6,6 +6,15 @@ botd is the daemon of volto: it runs on an executor host, starts one bot CLI per
 session and speaks the NDJSON protocol of [PROTOCOL.md](PROTOCOL.md) with the
 control plane — the relay in `client-ui/relay.mjs`, which reaches the daemon over ssh.
 
+## Host policy
+
+`src/host-policy.ts` defines a provider host policy: Claude may run only on
+`local`; Codex, Pi, Agy, Dsh, and all other providers require a remote SSH
+alias. Aliases must be non-empty and contain only `[A-Za-z0-9_.-]`; no local
+host is assumed for non-Claude providers. The policy helper is not yet wired
+into the daemon or router, so the existing quickstart describes current behavior
+and its remote Claude example does not comply with this policy.
+
 ## Requirements
 
 * **Node >= 22.18** — the floor of `botd/package.json` (`engines`), the first
