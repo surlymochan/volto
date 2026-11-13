@@ -23,11 +23,11 @@ debug logs — is in [botd/RUNBOOK.md](botd/RUNBOOK.md).
 ## Architecture
 
 ```
-   browser                control plane               executor host
+   UI on your machine     control plane               remote fleet host
  +-------------+       +---------------+        +----------------------+
  |  client-ui  |       |     relay     |  ssh   |  botd serve          |
- | "Remote     | ----> |   (Coming)    | -----> |  (botd/src)          |
- |  bots"      | NDJSON|               | <alias>|                      |
+ | "Remote     | ----> |               | -----> |  (botd/src)          |
+ |  bots"      | HTTP  |               | <alias>|                      |
  +-------------+       +---------------+        +----------+-----------+
                                                              |
                                           one child process per session
@@ -50,13 +50,10 @@ The adapters and the machine protocol of every bot CLI:
 
 Reading the diagram from the left:
 
-* **client-ui** is a browser panel. It talks to a `BotdClient`
-  ([client-ui/src/client.ts](client-ui/src/client.ts)); today the only
-  implementation is the mock client, so the panel runs against simulated
-  hosts and bots.
-* **relay** is the multiplexer that will sit between the panel and the
-  executor hosts. It is **Coming**: it is not in this tree yet, and the
-  diagram marks it as such.
+* **client-ui** is the browser panel. Its real client talks to the relay;
+  the mock client supplies simulated hosts and bots in `?mock=1` mode.
+* **relay** is the local multiplexer between the panel and the remote fleet
+  hosts. It serves the panel and connects to each host over SSH.
 * **ssh** is the transport to an executor host. The daemon is started as a
   forced command (`ssh <ssh-alias> botd serve`) and speaks NDJSON over
   stdin/stdout.
@@ -114,8 +111,9 @@ volto/
 │   │                  orchestration, metrics
 │   └── test/          the botd test suite (node --test)
 ├── client-ui/         the "Remote bots" panel (browser, no bundler)
+│   ├── relay.mjs      the panel server and SSH relay
 │   ├── serve.mjs      the dev server (transpiles the sources on the fly)
-│   ├── src/           panel, state, client contract, mock client
+│   ├── src/           panel, state, real and mock clients
 │   └── test/          the client-ui test suite (node --test)
 ├── probes/            read-only probes of the bot CLIs (probes/README.md)
 ├── python/            the python packaging of volto
@@ -148,36 +146,42 @@ volto/
 
 ## Quick start
 
-Everything below runs from a clone of this repository.
+Run these commands from a clone of this repository on your own machine.
+Every bot runs on a remote fleet host; your own machine runs the UI (the
+browser panel or an Electron shell) and its local relay, not bot processes.
 
-```sh
-# 1. see what the installer would do (no host is contacted)
-bash scripts/install-botd.sh <ssh-alias> --dry-run
+1. Configure SSH access to each remote fleet host and install the desired bot
+   CLIs there. Install botd on each host, using its SSH alias:
 
-# 2. install the daemon on an executor host
-bash scripts/install-botd.sh <ssh-alias>
+   ```sh
+   bash scripts/install-botd.sh <ssh-alias> --dry-run
+   bash scripts/install-botd.sh <ssh-alias>
+   ```
 
-# 2b. on a host without node 24: install a private node 24 into the prefix
-bash scripts/install-botd.sh <ssh-alias> --ensure-node
+   Repeat for each host. Use `--ensure-node` when the host needs a private
+   Node 24 installation. See the [runbook](botd/RUNBOOK.md) for host setup.
 
-# 3. run the offline self test of the installer
-bash scripts/botd-selftest.sh
+2. Create a hosts JSON file containing an array of objects with an `alias`
+   field. Replace `SSH_ALIAS` with a configured SSH alias and add an entry
+   for each remote fleet host; an optional `label` gives it a display name.
 
-# 4. run the test suites
-node --test "botd/test/**/*.test.ts"
-node --test "client-ui/test/**/*.test.ts"
+   ```json
+   [{ "alias": "SSH_ALIAS" }]
+   ```
 
-# 5. open the panel
-node client-ui/serve.mjs --port 8080
-```
+3. Start the relay, substituting the path to that file:
 
-Then open <http://127.0.0.1:8080/?mock=1>.
+   ```sh
+   node client-ui/relay.mjs --hosts <file> --port 8080
+   ```
 
-The panel today always runs against the mock client
-([client-ui/src/app.ts](client-ui/src/app.ts)); the `?mock=1` marker names
-the mode that is coming with the real daemon client and is ignored by the
-current build. The dev server picks a random free port when `--port` is
-missing and prints the URL it bound to.
+   Open the local URL printed by the relay in your browser and connect the
+   hosts in the panel. The real client is the default. Add `?mock=1` to the
+   URL to use simulated hosts and bots without connecting to a relay or
+   daemon. To serve the panel independently for mock mode, run
+   `node client-ui/serve.mjs --port 8080` and add `?mock=1` to its printed
+   URL. For known screen issues, see
+   [DEFECTS-screens.md](client-ui/test/DEFECTS-screens.md).
 
 More things that exist today:
 
@@ -198,9 +202,6 @@ The following is **not** in this tree yet — either not at all, or as a module
 the daemon does not call yet. It is listed here so nobody goes looking for
 it:
 
-* **the relay** — the multiplexer between the panel and the executor hosts.
-  The diagram above marks it as Coming.
-* **the real daemon client** — the panel always uses the mock client today.
 * **the session event log in the daemon** — `botd/src/session-log.ts` is a
   tested module, but the daemon does not write it yet (see the runbook).
 * **the metrics in the daemon** — `botd/src/metrics.ts` is a tested module
