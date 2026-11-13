@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { Botd } from "../src/daemon.ts";
+import { redact } from "../src/redact.ts";
 import {
   ANSWERING_CHILD,
   FAKE_CHILD,
@@ -337,7 +338,9 @@ test("persists the session table and reads it back", async (t) => {
   assert.equal(parsed.sessions.length, 1);
   assert.equal(parsed.sessions[0].sid, "s1");
   assert.equal(parsed.sessions[0].kind, "acp");
-  assert.deepEqual(parsed.sessions[0].command, CHILD_COMMAND);
+  // The stored command is redacted at serialization time (a home path such as
+  // /home/runner/... is stored as /home/<user>/...), whatever the host path.
+  assert.deepEqual(parsed.sessions[0].command, redact(CHILD_COMMAND));
   assert.equal(parsed.sessions[0].state, "running");
 
   // The table is written atomically: no temporary file is left behind.
