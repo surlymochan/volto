@@ -13,6 +13,7 @@ export type SupervisorOptions = {
   random?: () => number;
   maxRestarts?: number;
   windowMs?: number;
+  healthyMs?: number;
   graceMs?: number;
   now?: () => number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
@@ -71,24 +72,28 @@ export class Supervisor extends EventEmitter {
       return;
     }
     this.child = child;
+    const startedAt = (this.options.now ?? Date.now)();
     let gone = false;
     const finish = (code: number | null, signal: NodeJS.Signals | null, error?: unknown) => {
       if (gone) return;
       gone = true;
       if (this.child === child) this.child = null;
-      this.onGone(code, signal, error);
+      this.onGone(code, signal, error, startedAt);
     };
     child.once("error", (error) => finish(null, null, error));
     child.once("exit", (code, signal) => finish(code, signal));
     this.emit("started", child);
   }
 
-  private onGone(code: number | null, signal: NodeJS.Signals | null, error?: unknown): void {
+  private onGone(code: number | null, signal: NodeJS.Signals | null, error?: unknown, startedAt?: number): void {
     this.clear(this.killTimer);
     this.killTimer = null;
     this.emit("exited", { code, signal, error });
     if (this.stopped) return;
     const now = (this.options.now ?? Date.now)();
+    if (startedAt !== undefined && now - startedAt >= (this.options.healthyMs ?? this.options.windowMs ?? 60000)) {
+      this.attempts = 0;
+    }
     this.restarts = this.restarts.filter((time) => now - time < (this.options.windowMs ?? 60000));
     if (this.restarts.length >= (this.options.maxRestarts ?? 5)) {
       this.stopped = true;
