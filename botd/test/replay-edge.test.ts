@@ -318,7 +318,7 @@ test("a daemon that lost the journal reports the whole range as a gap", async (t
 
 test("the ring implements the gap and replay rules of the daemon", () => {
   // Inclusive hole, original seq kept, no gap for an up-to-date peer. The
-  // wording of PROTOCOL.md is deliberately not asserted here (protocol-doc.test.ts owns it).
+  // wording of the protocol doc is deliberately not asserted here (protocol-doc.test.ts owns it).
   const ring = new EventRing(2, 1 << 20);
   for (let seq = 1; seq <= 5; seq += 1) ring.push(seq, `line-${seq}`);
   const replayed = ring.since(1);
