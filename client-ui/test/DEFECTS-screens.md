@@ -1,5 +1,12 @@
 # Defects in the client-ui screens
 
+| Defect | Test name | Status |
+| --- | --- | --- |
+| 1 | `every session entry shows the status of its session` | open (todo) |
+| 2 | `the session list is ordered oldest first` | open (todo) |
+| 3 | `the prompt of a session that is not shown is still offered` | open (todo) |
+| 4 | `the panel masks a secret that reaches it unredacted` | open (todo) |
+
 Defects found while writing `client-ui/test/screens.test.ts` (the session list
 and the permission prompt of the "Remote bots" panel). The panel sources were
 not touched: every defect below is reported, not fixed.
@@ -100,8 +107,8 @@ is drawn as it arrives; nothing in `client-ui/` masks anything.
 
 **What happens:** the daemon masks the secrets before it sends an event
 (`botd/src/redact.ts`), so the panel can rely on it — and the redacted
-content indeed stays redacted on the screen (see the passing test `content
-the daemon redacted is shown redacted`). But the panel is the last place a
+content indeed stays redacted on the screen (see the passing test
+`content the daemon redacted is shown redacted`). But the panel is the last place a
 secret would be shown, and it does not check what it receives: a secret that
 reaches the UI is drawn verbatim. The mock client of `client-ui/src/`, which
 stands in for the daemon in the development setup, sends unredacted text as
