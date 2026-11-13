@@ -7,15 +7,17 @@ import { fileURLToPath } from 'node:url';
 import { respond } from './fake-bot.mjs';
 import { getAdapter } from '../src/adapters/index.ts';
 import { route } from '../src/router.ts';
-import { hostSpecs, maskHosts } from './hosts.mjs';
+import { demoAliases, hostSpecs, maskHosts } from './hosts.mjs';
+export { validateBotHosts, demoAliases } from './hosts.mjs';
 
+export async function main() {
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const demo = resolve(root, 'botd/demo');
 const fake = process.argv.includes('--fake');
 const outIndex = process.argv.indexOf('--out');
 if (outIndex !== -1 && !process.argv[outIndex + 1]) throw new Error('--out requires a path');
 const out = outIndex === -1 ? resolve(demo, 'out', new Date().toISOString().replace(/[:.]/g, '-') + '-' + process.pid) : resolve(process.argv[outIndex + 1]);
-const aliases = fake ? ['REMOTE_A', 'REMOTE_B'] : [process.env.REMOTE_CLAUDE, process.env.REMOTE_CODEX];
+const aliases = fake ? ['REMOTE_A', 'REMOTE_B'] : demoAliases();
 const hosts = hostSpecs(aliases);
 const mask = value => maskHosts(value, hosts);
 const log = resolve(out, 'transcript.ndjson');
@@ -134,3 +136,7 @@ try {
     await writeFile(log, lines.join('\n') + (lines.length ? '\n' : ''), { mode: 0o600 });
   } catch (error) { if (error.code !== 'ENOENT') throw error; }
 }
+
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

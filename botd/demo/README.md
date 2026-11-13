@@ -1,22 +1,14 @@
 # Two-host collaboration demo
 
-From the repository root, use Node.js 24 with native TypeScript stripping. Install botd on two distinct SSH hosts, with Claude Code installed and logged in on the first, and Codex installed and logged in on the second:
+From the repository root, use Node.js 24 with native TypeScript stripping. Run Claude Code on your own machine, with its local provider login, and install botd and Codex on a remote SSH host with Codex logged in there:
 
 ```sh
-scripts/install-botd.sh <claude-ssh-alias>
 scripts/install-botd.sh <codex-ssh-alias>
-export REMOTE_CLAUDE=<claude-ssh-alias>
 export REMOTE_CODEX=<codex-ssh-alias>
 node botd/demo/collab.mjs
 ```
 
-To run Claude locally and Codex on an SSH host, install botd on the remote host and run:
-
-```sh
-REMOTE_CLAUDE=local REMOTE_CODEX=<ssh-alias> node botd/demo/collab.mjs
-```
-
-Either bot can use `local`, but the two host values must be distinct. A local bot uses the machine's own provider login.
+`REMOTE_CLAUDE` defaults to `local`; `REMOTE_CODEX` is required. Claude bots run only on the local machine and must never be installed, logged in, or configured on a remote host. Codex and pi bots run only on remote SSH hosts; `local` is rejected for them.
 
 The relay connects to remote hosts through SSH, and the providers need permission to create files and run tests. The demo automatically approves provider permission requests. Claude is asked to create a temporary directory, implement and test `slugify`, and return both files. Its answer is sent to the independently routed Codex reviewer. The reviewer returns a PASS or FAIL verdict. A missing verdict is reported as UNKNOWN and fails the run. The script prints the turns and writes `botd/demo/out/<timestamp>/summary.json` and `transcript.ndjson`. Transcripts can contain prompts, code, and provider output; treat them as private. Host display names are REMOTE_A and REMOTE_B.
 
