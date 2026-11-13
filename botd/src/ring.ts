@@ -31,6 +31,7 @@ export class EventRing {
   private events: BufferedEvent[] = [];
   private bytes = 0;
   private evictedThrough = 0;
+  private hasEvicted = false;
   private lastSeqValue = 0;
   private maxEvents: number;
   private maxBytes: number;
@@ -70,6 +71,7 @@ export class EventRing {
       const dropped = this.events.shift();
       if (!dropped) break;
       this.bytes -= dropped.bytes;
+      this.hasEvicted = true;
       if (dropped.seq > this.evictedThrough) this.evictedThrough = dropped.seq;
     }
     return event;
@@ -81,14 +83,14 @@ export class EventRing {
    * together with the events that survived.
    */
   since(fromSeq: number): { events: BufferedEvent[]; gap: RingGap | null } {
-    const gap = fromSeq <= this.evictedThrough ? { fromSeq, toSeq: this.evictedThrough } : null;
-    const start = Math.max(fromSeq, this.evictedThrough + 1);
-    const events = this.events.filter((event) => event.seq >= start);
+    const gap = this.hasEvicted && fromSeq <= this.evictedThrough ? { fromSeq, toSeq: this.evictedThrough } : null;
+    const events = this.events.filter((event) => event.seq >= fromSeq);
     return { events, gap };
   }
 
   /** Forget everything; the evicted marker moves to the last sequence. */
   clear(): void {
+    if (this.events.length > 0) this.hasEvicted = true;
     this.events = [];
     this.bytes = 0;
     this.evictedThrough = this.lastSeqValue;
