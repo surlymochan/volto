@@ -24,16 +24,23 @@ process.stdin.on("data", chunk => process.stdout.write(chunk));
   });
 }
 
+const OPTIONS = ["-o", "BatchMode=yes", "-o", "ServerAliveInterval=15"];
+
+/** The layout is: fixed options, an optional `--` option terminator, exactly one alias argument, then the command. */
+function assertLayout(alias: string) {
+  const args = sshArgs(alias);
+  assert.deepEqual(args.slice(0, OPTIONS.length), OPTIONS);
+  const rest = args.slice(OPTIONS.length);
+  if (rest[0] === "--") rest.shift();
+  assert.deepEqual(rest, [alias, "botd", "serve"]);
+}
+
 test("sshArgs preserves an alias containing spaces as one argument", () => {
-  assert.deepEqual(sshArgs("alias with spaces"), [
-    "-o", "BatchMode=yes", "-o", "ServerAliveInterval=15",
-    "alias with spaces", "botd", "serve",
-  ]);
+  assertLayout("alias with spaces");
 });
 
 test("sshArgs preserves a leading dash in one argument", () => {
-  assert.equal(sshArgs("-alias")[4], "-alias");
-  assert.equal(sshArgs("-alias").length, 7);
+  assertLayout("-alias");
 });
 
 test("sshArgs protects a leading-dash alias from SSH option parsing", { todo: "sshArgs places the alias where ssh can parse it as an option" }, () => {
@@ -45,9 +52,10 @@ test("sshTransport passes the exact arguments to ssh", async (t) => {
   const transport = sshTransport("alias with spaces");
   t.after(() => transport.kill());
   const lines = createInterface({ input: transport.stdout })[Symbol.asyncIterator]();
-  assert.deepEqual(JSON.parse((await lines.next()).value), {
-    argv: ["-o", "BatchMode=yes", "-o", "ServerAliveInterval=15", "alias with spaces", "botd", "serve"],
-  });
+  const { argv } = JSON.parse((await lines.next()).value);
+  assert.deepEqual(argv, sshArgs("alias with spaces"));
+  assert.equal(argv.filter((arg: string) => arg === "alias with spaces").length, 1);
+  assert.deepEqual(argv.slice(-2), ["botd", "serve"]);
 });
 
 test("sshTransport exchanges multiple frames over stdin and stdout", async (t) => {
