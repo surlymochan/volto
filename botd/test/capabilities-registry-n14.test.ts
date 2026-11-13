@@ -9,8 +9,10 @@ import { ADAPTER_CAPABILITIES } from "../src/adapters/index.ts";
 const registrySource = readFileSync(new URL("../src/adapters/index.ts", import.meta.url), "utf8");
 const registryBody = registrySource.match(/export function getAdapter\([^]*?\n}\n/);
 assert.ok(registryBody, "getAdapter registry was not found");
-const registryKinds = [...registryBody[0].matchAll(/^\s*case "([^"]+)":/gm)]
-  .map((match) => match[1]);
+// Labels may use any quote style, be empty, or share a line (`case "a": case "b":`); empty ones
+// are kept so the identifier checks below reject them.
+const registryKinds = [...registryBody[0].matchAll(/\bcase\s+(["'`])((?:\\.|(?!\1)[^\\])*)\1\s*:/g)]
+  .map((match) => match[2]);
 const capabilityKinds = ADAPTER_CAPABILITIES.map((row) => row.kind);
 
 test("each registry case has a capability row", () => {
