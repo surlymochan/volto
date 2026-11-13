@@ -10,7 +10,15 @@ export REMOTE_CODEX=<codex-ssh-alias>
 node botd/demo/collab.mjs
 ```
 
-The relay connects through SSH, and the providers need permission to create files and run tests. The demo automatically approves provider permission requests. Claude is asked to create a temporary directory, implement and test `slugify`, and return both files. Its answer is sent to the independently routed Codex reviewer. The reviewer returns a PASS or FAIL verdict. A missing verdict is reported as UNKNOWN and fails the run. The script prints the turns and writes `botd/demo/out/<timestamp>/summary.json` and `transcript.ndjson`. Transcripts can contain prompts, code, and provider output; treat them as private. Host display names are REMOTE_A and REMOTE_B.
+To run Claude locally and Codex on an SSH host, install botd on the remote host and run:
+
+```sh
+REMOTE_CLAUDE=local REMOTE_CODEX=<ssh-alias> node botd/demo/collab.mjs
+```
+
+Either bot can use `local`, but the two host values must be distinct. A local bot uses the machine's own provider login.
+
+The relay connects to remote hosts through SSH, and the providers need permission to create files and run tests. The demo automatically approves provider permission requests. Claude is asked to create a temporary directory, implement and test `slugify`, and return both files. Its answer is sent to the independently routed Codex reviewer. The reviewer returns a PASS or FAIL verdict. A missing verdict is reported as UNKNOWN and fails the run. The script prints the turns and writes `botd/demo/out/<timestamp>/summary.json` and `transcript.ndjson`. Transcripts can contain prompts, code, and provider output; treat them as private. Host display names are REMOTE_A and REMOTE_B.
 
 Offline, no SSH or provider login is required:
 
