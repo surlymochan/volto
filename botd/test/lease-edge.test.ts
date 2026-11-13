@@ -25,7 +25,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { LeaseManager } from "../src/lease.ts";
+import { LeaseManager, MAX_TTL_MS } from "../src/lease.ts";
 import {
   hostResource,
   sessionResource,
@@ -90,29 +90,42 @@ async function makeHome(label: string): Promise<string> {
 // The lease of a session (botd/src/lease.ts)
 // ---------------------------------------------------------------------------
 
-test("a renew exactly at the ttl boundary is still accepted", () => {
+test("a renew just before the ttl boundary is still accepted", () => {
   const now = { value: 0 };
   const lease = manager(now);
   const hello = lease.hello("client-a", 500);
   assert.equal(hello.ok, true);
   if (!hello.ok) return;
 
-  // The lease runs out at renewedAt + ttl = 500.
-  now.value = 500;
+  // The lease runs out at renewedAt + ttl = 500 (state() is "paused" from there).
+  now.value = 499;
   const renew = lease.renew(hello.value.leaseId, hello.value.fence);
-  assert.equal(renew.ok, true, "a renew on the boundary is not too late");
+  assert.equal(renew.ok, true, "a renew before the boundary is not too late");
   if (!renew.ok) return;
 
   // The lease lives on for another ttl.
-  assert.equal(renew.value.renewedAt, 500);
-  assert.equal(renew.value.pauseAt, 1000);
-  assert.equal(renew.value.deadAt, 1500);
-  assert.equal(lease.state(500), "ok");
-  assert.equal(lease.state(1000), "paused");
+  assert.equal(renew.value.renewedAt, 499);
+  assert.equal(renew.value.pauseAt, 999);
+  assert.equal(renew.value.deadAt, 1499);
+  assert.equal(lease.state(499), "ok");
+  assert.equal(lease.state(999), "paused");
 });
 
-test("a renew one millisecond after the ttl boundary is rejected with lease_expired", (t) => {
-  t.todo("the lease manager does not check the expiry of the lease on a renew yet");
+// Round 2: renew now checks the expiry, so the boundary itself (state "paused") is too late.
+test("a renew exactly at the ttl boundary is rejected with lease_expired", () => {
+  const now = { value: 0 };
+  const lease = manager(now);
+  const hello = lease.hello("client-a", 500);
+  assert.equal(hello.ok, true);
+  if (!hello.ok) return;
+  now.value = 500;
+  const renew = lease.renew(hello.value.leaseId, hello.value.fence);
+  assert.equal(renew.ok, false);
+  if (renew.ok) return;
+  assert.equal(PROTOCOL_CODE[renew.code], "lease_expired");
+});
+
+test("a renew one millisecond after the ttl boundary is rejected with lease_expired", () => {
   const now = { value: 0 };
   const lease = manager(now);
   const hello = lease.hello("client-a", 500);
@@ -126,8 +139,7 @@ test("a renew one millisecond after the ttl boundary is rejected with lease_expi
   assert.equal(PROTOCOL_CODE[renew.code], "lease_expired");
 });
 
-test("a renew does not resurrect a lease that is already dead", (t) => {
-  t.todo("the lease manager does not check the expiry of the lease on a renew yet");
+test("a renew does not resurrect a lease that is already dead", () => {
   const now = { value: 0 };
   const lease = manager(now);
   const hello = lease.hello("client-a", 500);
@@ -150,8 +162,9 @@ test("a renew with a stale fence is rejected as a stale epoch", () => {
   assert.equal(first.ok, true);
   if (!first.ok) return;
 
-  // Another client takes the lease over: the fence of the first client is
-  // stale from now on.
+  // Another client takes the lease over (round 2: only possible once the
+  // first lease expired): the fence of the first client is stale from now on.
+  now.value = 500;
   const second = lease.hello("client-b", 500);
   assert.equal(second.ok, true);
   if (!second.ok) return;
@@ -174,6 +187,7 @@ test("a renew with the current fence but a foreign lease id is rejected", () => 
   const first = lease.hello("client-a", 500);
   assert.equal(first.ok, true);
   if (!first.ok) return;
+  now.value = 500; // round 2: a takeover needs an expired lease
   const second = lease.hello("client-b", 500);
   assert.equal(second.ok, true);
   if (!second.ok) return;
@@ -186,8 +200,7 @@ test("a renew with the current fence but a foreign lease id is rejected", () => 
   assert.equal(renew.code, "stale_lease");
 });
 
-test("a hello by a second holder while the first lease is still ok is a lease conflict", (t) => {
-  t.todo("the lease manager hands the lease over without reporting a conflict");
+test("a hello by a second holder while the first lease is still ok is a lease conflict", () => {
   const now = { value: 0 };
   const lease = manager(now);
   const first = lease.hello("client-a", 500);
@@ -267,7 +280,8 @@ test("the state goes from none to ok to paused to dead", () => {
   assert.equal(lease.state(100_000), "dead");
 });
 
-test("a renew brings a paused lease back to ok", () => {
+// Round 2: renew no longer resurrects a paused lease; the holder has to send hello again.
+test("a hello of the same client brings a paused lease back to ok", () => {
   const now = { value: 0 };
   const lease = manager(now);
   const hello = lease.hello("client-a", 500);
@@ -278,8 +292,10 @@ test("a renew brings a paused lease back to ok", () => {
   assert.equal(lease.state(600), "paused");
 
   const renew = lease.renew(hello.value.leaseId, hello.value.fence);
-  assert.equal(renew.ok, true);
-  if (!renew.ok) return;
+  assert.equal(renew.ok, false);
+  const again = lease.hello("client-a", 500);
+  assert.equal(again.ok, true);
+  if (!again.ok) return;
 
   assert.equal(lease.state(600), "ok");
   assert.equal(lease.state(1100), "paused");
@@ -354,13 +370,13 @@ test("an absurdly large ttl keeps the deadlines finite", () => {
   const hello = lease.hello("client-a", Number.MAX_SAFE_INTEGER);
   assert.equal(hello.ok, true);
   if (!hello.ok) return;
-  assert.equal(hello.value.ttlMs, Number.MAX_SAFE_INTEGER);
+  // Round 2: the ttl is capped at MAX_TTL_MS (one year).
+  assert.equal(hello.value.ttlMs, MAX_TTL_MS);
   assert.ok(Number.isFinite(hello.value.pauseAt));
   assert.ok(Number.isFinite(hello.value.deadAt));
 });
 
-test("an absurdly large ttl does not overflow the deadlines into infinity", (t) => {
-  t.todo("the lease manager doubles the ttl without guarding against an overflow");
+test("an absurdly large ttl does not overflow the deadlines into infinity", () => {
   const now = { value: 0 };
   const lease = manager(now);
   const hello = lease.hello("client-a", Number.MAX_VALUE);
@@ -398,6 +414,7 @@ test("isCurrentFence follows the fence of the current holder", () => {
   const first = lease.hello("client-a", 500);
   assert.equal(first.ok, true);
   if (!first.ok) return;
+  now.value = 500; // round 2: a takeover needs an expired lease
   const second = lease.hello("client-b", 500);
   assert.equal(second.ok, true);
   if (!second.ok) return;
@@ -440,11 +457,13 @@ test("a client that comes back after a takeover gets a new fence", () => {
   const first = lease.hello("client-a", 500);
   assert.equal(first.ok, true);
   if (!first.ok) return;
+  now.value = 500; // round 2: a takeover needs an expired lease
   const second = lease.hello("client-b", 500);
   assert.equal(second.ok, true);
   if (!second.ok) return;
 
-  // The first client comes back: it is no longer the holder.
+  // The first client comes back after the second lease expired too: it is no longer the holder.
+  now.value = 1000;
   const back = lease.hello("client-a", 500);
   assert.equal(back.ok, true);
   if (!back.ok) return;
