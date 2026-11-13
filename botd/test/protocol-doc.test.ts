@@ -1,9 +1,9 @@
 // Acceptance test for botd/PROTOCOL.md.
 //
 // The protocol document has to stay in sync with the implementation: every
-// frame op it documents must exist in botd/src (the grep check), the
-// document must stay inside its line budget and it must keep covering the
-// topics the protocol has to specify.
+// frame op it documents has to exist in botd/src (the grep check), every op
+// and every error code of the implementation has to be documented, and the
+// example sessions have to consist of frames the daemon would accept.
 //
 // The sessions in the document use synthetic ids only.
 
@@ -12,6 +12,9 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { parseClientFrame } from "../src/protocol.ts";
+import { SESSION_STATES } from "../src/protocol.ts";
 
 const MAX_DOC_LINES = 200;
 
@@ -30,6 +33,7 @@ function findRepoRoot(start: string): string {
 }
 
 const repoRoot = findRepoRoot(here);
+const srcDir = join(repoRoot, "botd", "src");
 const doc = readFileSync(join(repoRoot, "botd", "PROTOCOL.md"), "utf8");
 const docLines = doc.replace(/\n$/, "").split("\n");
 
@@ -44,53 +48,105 @@ function listSources(dir: string): string[] {
   return found.sort();
 }
 
-const srcFiles = listSources(join(repoRoot, "botd", "src"));
+const srcFiles = listSources(srcDir);
+const srcText = srcFiles.map((file) => readFileSync(file, "utf8")).join("\n");
 
-/** The backticked names of the first column of the table below `heading`. */
-function tableNames(heading: string): string[] {
-  const names: string[] = [];
-  let inTable = false;
+/** The lines of the section that starts with `heading`. */
+function section(heading: string): string[] {
+  const lines: string[] = [];
+  let inside = false;
   for (const line of docLines) {
-    if (line.startsWith("## ")) inTable = line.startsWith(heading);
-    if (!inTable) continue;
-    const cell = /^\|\s*`([A-Za-z_]+)`\s*\|/.exec(line);
-    if (cell) names.push(cell[1]);
+    if (line.startsWith("## ")) {
+      if (inside) break;
+      inside = line.startsWith(heading);
+      continue;
+    }
+    if (inside) lines.push(line);
   }
-  return names;
+  return lines;
 }
 
-/** The op names of the frame catalog (§3). */
-function catalogOps(): string[] {
-  return tableNames("## 3.");
+/** The cells of every table row of a section. */
+function tableRows(heading: string): string[][] {
+  const rows: string[][] = [];
+  for (const line of section(heading)) {
+    if (!line.startsWith("|")) continue;
+    const cells = line.split("|").slice(1, -1).map((cell) => cell.trim());
+    if (cells.every((cell) => /^-+$/.test(cell))) continue;
+    rows.push(cells);
+  }
+  return rows;
 }
 
-/** The error codes of the error code table (§8). */
+/** One row of the frame catalog. */
+type CatalogEntry = { op: string; direction: string };
+
+/** The ops of the frame catalog, with their direction. */
+function frameCatalog(): CatalogEntry[] {
+  const entries: CatalogEntry[] = [];
+  for (const cells of tableRows("## 3.")) {
+    const op = /`([a-z]+)`/.exec(cells[0] ?? "");
+    if (!op) continue;
+    entries.push({ op: op[1], direction: cells[1] ?? "" });
+  }
+  return entries;
+}
+
+/** The error codes of the error code table. */
 function errorCodes(): string[] {
-  return tableNames("## 8.");
+  const codes: string[] = [];
+  for (const cells of tableRows("## 8.")) {
+    const code = /`([a-z_]+)`/.exec(cells[0] ?? "");
+    if (code) codes.push(code[1]);
+  }
+  return codes;
 }
 
 /** One frame of an example session, in document order. */
-interface ExampleFrame {
+type ExampleFrame = {
   direction: string;
-  v: number;
   op: string;
-  seq: number;
-  ack: number;
-  session: string;
-  code?: string;
-  resume?: unknown;
-}
+  sid: string | undefined;
+  seq: number | undefined;
+  fromSeq: number | undefined;
+  toSeq: number | undefined;
+  code: string | undefined;
+  frame: Record<string, unknown>;
+};
 
-/** The frames of the example sessions (§10). */
+/** The frames of the example sessions. */
 function exampleFrames(): ExampleFrame[] {
   const frames: ExampleFrame[] = [];
   for (const line of docLines) {
     const match = /^(→|←)\s+(\{.*\})$/.exec(line);
     if (!match) continue;
-    frames.push(JSON.parse(match[2]) as ExampleFrame);
-    frames[frames.length - 1].direction = match[1];
+    const frame = JSON.parse(match[2]) as Record<string, unknown>;
+    frames.push({
+      direction: match[1] ?? "",
+      op: String(frame.op ?? ""),
+      sid: typeof frame.sid === "string" ? frame.sid : undefined,
+      seq: typeof frame.seq === "number" ? frame.seq : undefined,
+      fromSeq: typeof frame.fromSeq === "number" ? frame.fromSeq : undefined,
+      toSeq: typeof frame.toSeq === "number" ? frame.toSeq : undefined,
+      code: typeof frame.code === "string" ? frame.code : undefined,
+      frame,
+    });
   }
   return frames;
+}
+
+/** The ops of a frame union of botd/src/protocol.ts. */
+function sourceOps(typeName: string, nextType: string): string[] {
+  const source = readFileSync(join(srcDir, "protocol.ts"), "utf8");
+  const start = source.indexOf(`export type ${typeName}`);
+  const end = source.indexOf(`export type ${nextType}`);
+  assert.ok(start >= 0 && end > start, `botd/src/protocol.ts has no ${typeName}`);
+  return [...source.slice(start, end).matchAll(/op:\s*"([a-z]+)"/g)].map((match) => match[1] ?? "");
+}
+
+/** The error codes the implementation can emit. */
+function sourceErrorCodes(): string[] {
+  return [...new Set([...srcText.matchAll(/code:\s*"([a-z_]+)"/g)].map((match) => match[1] ?? ""))];
 }
 
 test("the protocol document stays inside its line budget", () => {
@@ -101,28 +157,48 @@ test("the protocol document stays inside its line budget", () => {
   );
 });
 
-test("the frame catalog lists the ops of the protocol", () => {
-  const ops = catalogOps();
-  assert.ok(ops.length >= 5, `the catalog holds only ${ops.length} ops`);
-  assert.equal(new Set(ops).size, ops.length, `duplicate op in the catalog: ${ops.join(", ")}`);
-});
-
-test("every documented frame op exists in botd/src", () => {
-  for (const op of catalogOps()) {
-    const found = srcFiles.some((file) => new RegExp(`\\b${op}\\b`).test(readFileSync(file, "utf8")));
-    assert.ok(found, `op "${op}" is documented but does not appear in botd/src`);
+test("every frame op of the document appears in botd/src", () => {
+  const catalog = frameCatalog();
+  assert.ok(catalog.length >= 10, `the catalog holds only ${catalog.length} ops`);
+  for (const entry of catalog) {
+    const found = srcFiles.some((file) =>
+      new RegExp(`\\b${entry.op}\\b`).test(readFileSync(file, "utf8")),
+    );
+    assert.ok(found, `op "${entry.op}" is documented but does not appear in botd/src`);
   }
 });
 
-test("the example sessions only use documented ops", () => {
-  const ops = new Set(catalogOps());
-  const used = new Set<string>();
-  for (const frame of exampleFrames()) {
-    assert.ok(ops.has(frame.op), `an example uses the undocumented op "${frame.op}"`);
-    used.add(frame.op);
+test("the frame catalog documents every op of the implementation", () => {
+  const catalog = frameCatalog();
+  for (const op of sourceOps("ClientFrame", "ServerFrame")) {
+    const entry = catalog.find((item) => item.op === op && item.direction.startsWith("client"));
+    assert.ok(entry, `the client op "${op}" is not documented`);
   }
-  for (const op of ops) {
-    assert.ok(used.has(op), `op "${op}" is documented but never shown in an example`);
+  for (const op of sourceOps("ServerFrame", "ParseResult")) {
+    const entry = catalog.find((item) => item.op === op && item.direction.startsWith("botd"));
+    assert.ok(entry, `the server op "${op}" is not documented`);
+  }
+});
+
+test("the error code table matches the codes of the implementation", () => {
+  const documented = new Set(errorCodes());
+  assert.ok(documented.size >= 5, `the error code table holds only ${documented.size} codes`);
+  for (const code of sourceErrorCodes()) {
+    assert.ok(documented.has(code), `the error code "${code}" is not documented`);
+  }
+  for (const code of documented) {
+    assert.ok(
+      sourceErrorCodes().includes(code),
+      `the error code "${code}" is documented but the daemon never emits it`,
+    );
+  }
+});
+
+test("every error code used in the document is listed in the error code table", () => {
+  const listed = new Set(errorCodes());
+  const used = new Set([...doc.matchAll(/code:"([a-z_]+)"/g)].map((match) => match[1] ?? ""));
+  for (const code of used) {
+    assert.ok(listed.has(code), `the error code "${code}" is not listed in the error code table`);
   }
 });
 
@@ -131,55 +207,109 @@ test("the document has three example sessions", () => {
   assert.equal(sessions.length, 3, `the document has ${sessions.length} example sessions`);
 });
 
-test("the example frames are well formed", () => {
-  const frames = exampleFrames();
-  assert.ok(frames.length >= 10, `only ${frames.length} frames in the examples`);
-  for (const frame of frames) {
-    assert.equal(frame.v, 1, `frame with an unexpected version: ${JSON.stringify(frame)}`);
-    assert.ok(Number.isInteger(frame.seq) && frame.seq >= 1, `bad seq: ${JSON.stringify(frame)}`);
-    assert.ok(Number.isInteger(frame.ack) && frame.ack >= 0, `bad ack: ${JSON.stringify(frame)}`);
-    assert.ok(
-      typeof frame.session === "string" && frame.session.length > 0,
-      `bad session: ${JSON.stringify(frame)}`,
-    );
+test("the example sessions only use documented ops and show every op", () => {
+  const catalog = frameCatalog();
+  const clientOps = new Set(
+    catalog.filter((entry) => entry.direction.startsWith("client")).map((entry) => entry.op),
+  );
+  const serverOps = new Set(
+    catalog.filter((entry) => entry.direction.startsWith("botd")).map((entry) => entry.op),
+  );
+  const used = new Set<string>();
+  for (const frame of exampleFrames()) {
+    const ops = frame.direction === "→" ? clientOps : serverOps;
+    assert.ok(ops.has(frame.op), `an example uses the undocumented op "${frame.op}"`);
+    used.add(frame.op);
+  }
+  for (const entry of catalog) {
+    assert.ok(used.has(entry.op), `op "${entry.op}" is documented but never shown in an example`);
+  }
+});
+
+test("the client frames of the examples are accepted by the daemon", () => {
+  for (const frame of exampleFrames()) {
+    if (frame.direction !== "→") continue;
+    const result = parseClientFrame(frame.frame);
+    if (!result.ok) {
+      assert.fail(`the example frame ${JSON.stringify(frame.frame)} is rejected: ${result.message}`);
+    }
+  }
+});
+
+test("the server frames of the examples carry the documented fields", () => {
+  const fields: Record<string, string[]> = {
+    hello: ["botdVersion", "leaseId", "fence", "leaseTtlMs"],
+    event: ["sid", "seq", "payload"],
+    state: ["sid", "state", "progressAt"],
+    error: ["code", "message"],
+    gap: ["sid", "fromSeq", "toSeq"],
+    stall: ["sid", "idleMs"],
+  };
+  for (const frame of exampleFrames()) {
+    if (frame.direction !== "←") continue;
+    const expected = fields[frame.op];
+    assert.ok(expected, `the server op "${frame.op}" has no documented fields`);
+    for (const field of expected) {
+      assert.ok(field in frame.frame, `the ${frame.op} frame misses the field "${field}"`);
+    }
+    if (frame.op === "event") {
+      assert.ok(
+        typeof frame.seq === "number" && frame.seq >= 1,
+        `bad seq: ${JSON.stringify(frame.frame)}`,
+      );
+    }
+    if (frame.op === "state") {
+      assert.ok(
+        (SESSION_STATES as readonly string[]).includes(String(frame.frame.state)),
+        `bad state: ${JSON.stringify(frame.frame)}`,
+      );
+    }
+    if (frame.op === "gap") {
+      assert.ok(
+        typeof frame.fromSeq === "number" &&
+          typeof frame.toSeq === "number" &&
+          frame.fromSeq <= frame.toSeq,
+        `bad gap: ${JSON.stringify(frame.frame)}`,
+      );
+    }
+    if (frame.op === "stall") {
+      assert.ok(
+        typeof frame.frame.idleMs === "number",
+        `bad idleMs: ${JSON.stringify(frame.frame)}`,
+      );
+    }
   }
 });
 
 test("the example frames honour the ordering and acknowledgement rules", () => {
-  const lastSeq: Record<string, number> = { "→": 0, "←": 0 };
-  const lastAck: Record<string, number> = { "→": 0, "←": 0 };
-  const peerSeq: Record<string, number> = { "→": 0, "←": 0 };
-  const lastPeerFrame: Record<string, ExampleFrame | undefined> = { "→": undefined, "←": undefined };
-  let session = "";
+  const frames = exampleFrames();
+  const lastEvent = new Map<string, number>();
+  const lastAck = new Map<string, number>();
+  let replayAsked = false;
 
-  for (const frame of exampleFrames()) {
-    if (frame.session !== session) {
-      session = frame.session;
-      lastSeq["→"] = 0;
-      lastSeq["←"] = 0;
-      lastAck["→"] = 0;
-      lastAck["←"] = 0;
-      peerSeq["→"] = 0;
-      peerSeq["←"] = 0;
+  for (const frame of frames) {
+    if (frame.direction === "→" && frame.op === "resume") {
+      replayAsked = true;
+      continue;
     }
-    const peer = frame.direction === "→" ? "←" : "→";
-    assert.ok(
-      frame.ack <= peerSeq[peer],
-      `ack ${frame.ack} runs ahead of the frames sent by ${peer}`,
-    );
-    assert.ok(frame.ack >= lastAck[frame.direction], `ack ${frame.ack} goes backwards`);
-    if (frame.seq <= lastSeq[frame.direction]) {
-      // A replay repeats an older seq: the peer has to have asked for it.
-      const asked = lastPeerFrame[peer];
-      const wanted =
-        asked !== undefined &&
-        (asked.op === "handshake" ? asked.resume !== undefined : asked.code === "seq_gap");
-      assert.ok(wanted, `frame ${frame.seq} of ${frame.direction} replays without being asked for`);
+    if (frame.direction === "→" && frame.op === "ack" && frame.sid && frame.seq !== undefined) {
+      const highest = lastEvent.get(frame.sid) ?? 0;
+      assert.ok(
+        frame.seq <= highest,
+        `the ack ${frame.seq} runs ahead of the events of ${frame.sid} (last event ${highest})`,
+      );
+      const previous = lastAck.get(frame.sid) ?? 0;
+      assert.ok(frame.seq >= previous, `the ack ${frame.seq} of ${frame.sid} goes backwards`);
+      lastAck.set(frame.sid, frame.seq);
+      continue;
     }
-    lastSeq[frame.direction] = Math.max(lastSeq[frame.direction], frame.seq);
-    lastAck[frame.direction] = frame.ack;
-    peerSeq[frame.direction] = Math.max(peerSeq[frame.direction], frame.seq);
-    lastPeerFrame[frame.direction] = frame;
+    if (frame.direction === "←" && frame.op === "event" && frame.sid && frame.seq !== undefined) {
+      const previous = lastEvent.get(frame.sid);
+      if (previous !== undefined && frame.seq <= previous) {
+        assert.ok(replayAsked, `the event ${frame.seq} of ${frame.sid} is replayed unasked`);
+      }
+      lastEvent.set(frame.sid, Math.max(previous ?? 0, frame.seq));
+    }
   }
 });
 
@@ -189,26 +319,17 @@ test("the document specifies ordering, leases, cancellation, errors and versioni
     "ack",
     "gap",
     "resume",
-    "ttlms",
+    "ttl",
     "renew",
-    "epoch",
-    "fenc",
+    "fence",
     "cancel",
     "escalat",
     "error code",
     "version",
+    "stall",
   ];
   const lower = doc.toLowerCase();
   for (const topic of topics) {
     assert.ok(lower.includes(topic), `the document does not mention "${topic}"`);
-  }
-});
-
-test("every error code of the document is listed in the error code table", () => {
-  const listed = new Set(errorCodes());
-  assert.ok(listed.size >= 5, `the error code table holds only ${listed.size} codes`);
-  const used = new Set([...doc.matchAll(/code:"([a-z_]+)"/g)].map((match) => match[1]));
-  for (const code of used) {
-    assert.ok(listed.has(code), `the error code "${code}" is not listed in the error code table`);
   }
 });
