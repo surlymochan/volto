@@ -27,7 +27,9 @@ function sourceFiles(dir: URL): URL[] {
 const emitted = new Set<string>();
 for (const file of sourceFiles(src)) {
   const text = readFileSync(file, "utf8");
-  for (const match of text.matchAll(/\{\s*op:\s*["']error["']\s*,([^}]+)\}/g)) {
+  // Property order is irrelevant: inspect every flat object literal for op "error" plus a code.
+  for (const match of text.replace(/\$\{[^{}]*\}/g, "").matchAll(/\{([^{}]*)\}/g)) {
+    if (!/\bop:\s*["']error["']/.test(match[1])) continue;
     const code = /\bcode:\s*["']([^"']+)["']/.exec(match[1]);
     if (code) emitted.add(code[1]);
   }
