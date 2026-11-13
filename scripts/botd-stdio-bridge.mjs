@@ -31,7 +31,7 @@
 // Node 24, no dependencies: only the standard library is used.
 
 import { spawn } from "node:child_process";
-import { existsSync, lstatSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, unlinkSync } from "node:fs";
 import { createServer } from "node:net";
 import { resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -181,11 +181,36 @@ class Bridge {
 
       const server = createServer((socket) => this.onClient(socket));
       this.server = server;
-      server.once("error", reject);
-      server.listen(this.socketPath, () => {
-        server.off("error", reject);
-        resolve(undefined);
-      });
+      // The socket carries the authenticated ssh stream: only the owner may connect.
+      // umask makes the bind itself private, chmod covers platforms that ignore it.
+      const previousUmask = process.umask(0o177);
+      let umaskRestored = false;
+      const restoreUmask = () => {
+        if (umaskRestored) return;
+        umaskRestored = true;
+        process.umask(previousUmask);
+      };
+      const onError = (error) => {
+        restoreUmask();
+        reject(error);
+      };
+      server.once("error", onError);
+      try {
+        server.listen(this.socketPath, () => {
+          restoreUmask();
+          try {
+            chmodSync(this.socketPath, 0o600);
+          } catch (error) {
+            server.close();
+            reject(error);
+            return;
+          }
+          server.off("error", onError);
+          resolve(undefined);
+        });
+      } catch (error) {
+        onError(error);
+      }
     });
   }
 

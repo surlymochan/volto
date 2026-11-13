@@ -14,6 +14,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -224,6 +225,29 @@ async function setup(t, options = {}) {
 
   return { bridge, directory, fakeSsh, logFile, messages, socketPath };
 }
+
+test("the bridge socket is only accessible to its owner", { skip }, async (t) => {
+  const { socketPath } = await setup(t);
+  assert.equal(statSync(socketPath).mode & 0o777, 0o600);
+});
+
+test("restores the umask when the socket bind fails", { skip }, async () => {
+  const before = process.umask();
+  const directory = mkdtempSync(join(scratch, "bindfail-"));
+  try {
+    await assert.rejects(
+      startBridge({
+        host: "host-a",
+        socketPath: join(directory, "missing-dir", "bridge.sock"),
+        sshCommand: "true",
+        log: () => {},
+      }),
+    );
+    assert.equal(process.umask(), before);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 test("relays the frames of the client to the remote and back", { skip }, async (t) => {
   const { socketPath } = await setup(t);
