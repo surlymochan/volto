@@ -99,7 +99,7 @@ export class SessionStore {
   /** Write the table atomically. */
   save(records: SessionRecord[]): void {
     const dir = path.dirname(this.file);
-    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const tmp = path.join(dir, `.${path.basename(this.file)}.tmp-${process.pid}`);
     const sessions = records.map((record) =>
       Object.fromEntries(
@@ -110,7 +110,7 @@ export class SessionStore {
       ),
     );
     const data = `${JSON.stringify({ version: 1, sessions }, null, 2)}\n`;
-    const fd = fs.openSync(tmp, "w");
+    const fd = fs.openSync(tmp, "w", 0o600);
     try {
       fs.writeFileSync(fd, data);
       fs.fsyncSync(fd);

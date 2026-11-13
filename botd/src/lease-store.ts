@@ -558,7 +558,7 @@ export class LeaseStore {
    * still be recovered from it.
    */
   async #persistState(state: StoreState): Promise<void> {
-    await mkdir(this.#home, { recursive: true });
+    await mkdir(this.#home, { recursive: true, mode: 0o700 });
     const contents = `${JSON.stringify(state, null, 2)}\n`;
     const previous = await this.#readGoodState();
     await writeFileAtomic(this.#backupPath, previous ?? contents);
@@ -583,12 +583,12 @@ export class LeaseStore {
 
   /** Take the cross-process lock; returns the release function. */
   async #acquireFileLock(): Promise<() => Promise<void>> {
-    await mkdir(this.#home, { recursive: true });
+    await mkdir(this.#home, { recursive: true, mode: 0o700 });
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
 
     for (;;) {
       try {
-        const handle = await open(this.#lockPath, "wx");
+        const handle = await open(this.#lockPath, "wx", 0o600);
         try {
           await handle.writeFile(`${process.pid}\n`, "utf8");
         } finally {
@@ -617,7 +617,7 @@ export class LeaseStore {
 /** Write `contents` to `file` through a temporary file that is fsynced. */
 async function writeFileAtomic(file: string, contents: string): Promise<void> {
   const tmp = `${file}.tmp-${process.pid}-${randomUUID()}`;
-  const handle = await open(tmp, "w");
+  const handle = await open(tmp, "w", 0o600);
   try {
     await handle.writeFile(contents, "utf8");
     await handle.sync();
