@@ -90,6 +90,51 @@ function canConnect(host: string, port: number): Promise<boolean> {
   });
 }
 
+/** Selects ordinary private IPv4 interfaces for the reachability check. */
+function isCandidateAddress(name: string, entry: os.NetworkInterfaceInfo): boolean {
+  if (/^(?:utun|tun|tap|wg|ppp|ipsec|tailscale)/i.test(name) || entry.family !== "IPv4" || entry.internal) {
+    return false;
+  }
+  const [first, second] = entry.address.split(".").map(Number);
+  return first === 10 || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168) || (first === 169 && second === 254);
+}
+
+/** Checks whether a connection to a recently closed port is accepted. */
+async function acceptsEverything(host: string): Promise<boolean> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "0.0.0.0", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return canConnect(host, address.port);
+}
+
+test("the reachability address filter selects private physical interfaces", () => {
+  const cases: [string, string, boolean][] = [
+    ["eth0", "10.0.0.1", true],
+    ["eth0", "172.16.0.1", true],
+    ["eth0", "172.31.255.255", true],
+    ["eth0", "172.32.0.1", false],
+    ["eth0", "192.168.1.1", true],
+    ["eth0", "169.254.1.1", true],
+    ["eth0", "198.18.0.1", false],
+    ["eth0", "198.19.255.255", false],
+    ["tun0", "10.0.0.1", false],
+    ["tailscale0", "192.168.1.1", false],
+    ["eth0", "8.8.8.8", false],
+  ];
+  for (const [name, address, expected] of cases) {
+    const entry: os.NetworkInterfaceInfo = {
+      address, family: "IPv4", internal: false, netmask: "255.255.255.0", mac: "00:00:00:00:00:00", cidr: null,
+    };
+    assert.equal(isCandidateAddress(name, entry), expected, `${name} ${address}`);
+  }
+});
+
 /** Runs the server as a child process and collects its output. */
 function runServer(
   args: string[],
@@ -270,7 +315,7 @@ test("the page and the stylesheet are served with their own type", async () => {
   });
 });
 
-test("the server listens on the loopback interface only", async () => {
+test("the server listens on the loopback interface only", async (t) => {
   const { startServer } = await import("../serve.mjs");
   const { server, port } = await startServer({ port: 0 });
   try {
@@ -279,9 +324,18 @@ test("the server listens on the loopback interface only", async () => {
     assert.equal(address?.address, "127.0.0.1");
     assert.equal(address?.family, "IPv4");
 
-    const outside = Object.values(os.networkInterfaces())
-      .flat()
-      .filter((entry) => entry && entry.family === "IPv4" && !entry.internal);
+    const outside = Object.entries(os.networkInterfaces())
+      .flatMap(([name, entries]) => (entries ?? []).filter((entry) => isCandidateAddress(name, entry)));
+    if (outside.length === 0) {
+      t.skip("no eligible private or link-local IPv4 interface");
+      return;
+    }
+    for (const entry of outside) {
+      if (await acceptsEverything(entry.address)) {
+        t.skip(`connections to closed ports on ${entry.address} are accepted`);
+        return;
+      }
+    }
     for (const entry of outside) {
       assert.equal(await canConnect(entry.address, port), false, `${entry.address} is not reachable`);
     }

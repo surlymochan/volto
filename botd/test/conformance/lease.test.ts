@@ -192,26 +192,42 @@ test("answers hello with the effective ttl", async (t) => {
   assert.equal(second.leaseTtlMs, 60_000);
 });
 
-test.todo(
-  "PROTOCOL.md §3: a frame before hello is answered with no_lease",
-  async (t) => {
-    // PROTOCOL.md §3: "hello is the first frame of a connection; every
-    // other frame before it is answered with error and code:"no_lease"".
-    // The daemon answers no_lease while no lease is held, but a second
-    // connection that sends a frame before its hello gets stale_fence,
-    // because the fence of the connection is compared with the fence of the
-    // lease before the lease is looked at. See
-    // botd/test/conformance/DEVIATIONS.md (D1).
-    const { daemon } = startHarness();
-    t.after(() => daemon.close());
-    const first = new RawClient(daemon);
-    const second = new RawClient(daemon);
+test("PROTOCOL.md §3: a frame before hello is answered with no_lease", async (t) => {
+  const { daemon } = startHarness();
+  t.after(() => daemon.close());
+  const first = new RawClient(daemon);
+  const second = new RawClient(daemon);
 
-    first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
-    await first.waitForOp("hello");
+  first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
+  await first.waitForOp("hello");
+  second.send({ op: "ack", sid: "s1", seq: 1 });
+  const error = await second.waitForError("no_lease");
+  assert.equal(error.message, "send hello before other frames");
+});
 
-    second.send({ op: "ack", sid: "s1", seq: 1 });
-    const error = await second.waitForError("stale_fence");
-    assert.equal(error.code, "stale_fence", "the daemon answers stale_fence, not no_lease");
-  },
-);
+test("answers renew before hello with no_lease while another client holds the lease", async (t) => {
+  const { daemon } = startHarness();
+  t.after(() => daemon.close());
+  const first = new RawClient(daemon);
+  const second = new RawClient(daemon);
+  first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
+  const hello = await first.waitForOp("hello");
+  second.send({ op: "renew", leaseId: hello.leaseId, fence: hello.fence });
+  const error = await second.waitForError("no_lease");
+  assert.equal(error.message, "send hello before other frames");
+});
+
+test("a connection works after hello following a pre-hello frame", async (t) => {
+  const { daemon } = startHarness();
+  t.after(() => daemon.close());
+  const first = new RawClient(daemon);
+  const second = new RawClient(daemon);
+  first.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
+  await first.waitForOp("hello");
+  second.send({ op: "ack", sid: "s1", seq: 1 });
+  await second.waitForError("no_lease");
+  second.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000 });
+  const hello = await second.waitForOp("hello");
+  second.send({ op: "renew", leaseId: hello.leaseId, fence: hello.fence });
+  assert.deepEqual(await second.collect(), []);
+});
