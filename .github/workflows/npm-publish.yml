@@ -5,7 +5,23 @@ permissions:
   id-token: write
   contents: read
 jobs:
+  lock-check:
+    name: lockfile consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # Every `npm ci` in this repository must run after this step.
+      - name: Check package-lock.json against package.json
+        run: node tools/check-lock.mjs
+
   publish:
+    needs: lock-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

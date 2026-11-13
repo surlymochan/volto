@@ -8,6 +8,10 @@
 #
 # The two suites are independent. A glob that matches no file (a branch that
 # does not carry that suite yet) is skipped instead of failing the run.
+#
+# The lockfile check runs first: `npm ci` refuses to install from a
+# package-lock.json that does not match its package.json, so the drift has to
+# be reported before anything installs from a lockfile.
 
 name: botd-ci
 
@@ -25,8 +29,24 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lock-check:
+    name: lockfile consistency
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # Every `npm ci` in this repository must run after this step.
+      - name: Check package-lock.json against package.json
+        run: node tools/check-lock.mjs
+
   test:
     name: node 24 test suites
+    needs: lock-check
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -45,7 +65,7 @@ jobs:
           shopt -s globstar nullglob
 
           patterns=()
-          for pattern in "botd/test/**/*.test.ts" "client-ui/test/**/*.test.ts"; do
+          for pattern in "botd/test/**/*.test.ts" "client-ui/test/**/*.test.ts" "tools/test/**/*.test.mjs"; do
             if compgen -G "$pattern" > /dev/null; then
               patterns+=("$pattern")
             else
