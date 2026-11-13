@@ -67,6 +67,10 @@ function num(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function nonempty(value: string | undefined): string | undefined {
+  return value === undefined || value.trim() === "" ? undefined : value;
+}
+
 /** Build the configuration from command line flags and the environment. */
 export function loadConfig(
   argv: string[] = [],
@@ -80,7 +84,7 @@ export function loadConfig(
 
   const config: BotdConfig = { ...DEFAULT_CONFIG };
 
-  const home = flags.get("home") ?? env.BOTD_HOME;
+  const home = nonempty(flags.get("home")) ?? nonempty(env.BOTD_HOME);
   if (home) config.home = defaultBotdHome({ BOTD_HOME: home });
 
   const leaseTtlMs = num(flags.get("lease-ttl-ms")) ?? num(env.BOTD_LEASE_TTL_MS);
@@ -111,7 +115,7 @@ export function loadConfig(
   const terminateGraceMs = num(flags.get("terminate-grace-ms")) ?? num(env.BOTD_TERMINATE_GRACE_MS);
   if (terminateGraceMs !== undefined) config.terminateGraceMs = terminateGraceMs;
 
-  const storeFile = flags.get("store-file") ?? env.BOTD_STORE_FILE;
+  const storeFile = nonempty(flags.get("store-file")) ?? nonempty(env.BOTD_STORE_FILE);
   if (storeFile) config.storeFile = path.resolve(storeFile);
 
   return config;
