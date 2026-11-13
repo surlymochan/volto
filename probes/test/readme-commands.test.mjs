@@ -196,9 +196,9 @@ function probeSources() {
 }
 
 test("every file path named in a README code block exists", () => {
-  const block = codeBlocks(readme).find((candidate) => candidate.language === "sh");
-  assert.ok(block, "the README has no sh code block");
-  const paths = [...block.code.matchAll(/\bprobes\/[A-Za-z0-9_.*/-]+/g)].map((match) =>
+  const blocks = codeBlocks(readme).filter((candidate) => /^(?:sh|bash|shell)$/.test(candidate.language));
+  assert.ok(blocks.length > 0, "the README has no sh code block");
+  const paths = [...blocks.map((block) => block.code).join("\n").matchAll(/\bprobes\/[A-Za-z0-9_.*/-]+/g)].map((match) =>
     match[0].replace(/\/+$/, ""),
   );
   assert.ok(paths.length >= 3, "the usage block names no path");
