@@ -76,6 +76,9 @@ port=$((10#$port))
 [ -d "$SRC_DIR" ] || die 'client-ui/ is missing'
 entry=serve.mjs
 [ ! -f "$SRC_DIR/relay.mjs" ] || entry=relay.mjs
+if [ -n "$hosts" ] && [ "$entry" != relay.mjs ]; then
+  fail_step preflight '--hosts requires client-ui/relay.mjs; serve.mjs does not accept a hosts file'
+fi
 if [ "$mode" = dry ]; then
   step preflight 'check node >= 24 and hosts file'
   step directories 'create client and log directories'
@@ -111,7 +114,9 @@ else
   step sync 'ok'
 fi
 
-# Only the hosts file path, never its contents, belongs in the plist.
+# Only the hosts file path, never its contents, belongs in the plist. relay.mjs reads `--hosts <file>`.
+hosts_args=''
+[ -z "$hosts" ] || hosts_args="    <string>--hosts</string><string>$(xml "$hosts")</string>"
 if ! {
   cat <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -124,15 +129,13 @@ if ! {
     <string>$(xml "$node_bin")</string>
     <string>$(xml "$prefix/$entry")</string>
     <string>--port</string><string>$port</string>
+$hosts_args
   </array>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>StandardOutPath</key><string>$(xml "$log_dir/client.log")</string>
   <key>StandardErrorPath</key><string>$(xml "$log_dir/client.error.log")</string>
 PLIST
-  if [ -n "$hosts" ]; then
-    printf '  <key>EnvironmentVariables</key><dict><key>BOTD_HOSTS_FILE</key><string>%s</string></dict>\n' "$(xml "$hosts")"
-  fi
   printf '</dict>\n</plist>\n'
 } > "$plist"; then
   fail_step plist 'cannot write plist'

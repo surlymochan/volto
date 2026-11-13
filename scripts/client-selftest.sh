@@ -58,6 +58,12 @@ check 'keep alive enabled' contains "$PLIST" '<key>KeepAlive</key><true/>'
 check 'throttle configured' contains "$PLIST" '<key>ThrottleInterval</key><integer>10</integer>'
 check 'logs use user library' contains "$PLIST" "$HOME/Library/Logs/volto/client.log"
 check 'hosts path is escaped' contains "$PLIST" 'hosts &amp; one.json'
+plist_args() { python3 -I -c 'import plistlib,sys;print("\n".join(plistlib.load(open(sys.argv[1],"rb"))["ProgramArguments"]))' "$1"; }
+plist_args "$PLIST" > "$SCRATCH/args.txt" 2>&1
+check 'plist parses' test -s "$SCRATCH/args.txt"
+check 'ProgramArguments has --hosts <path>' grep -qxF -e '--hosts' "$SCRATCH/args.txt"
+check 'ProgramArguments --hosts value is the hosts file' test "$(grep -x -A1 -e '--hosts' "$SCRATCH/args.txt" | sed -n 2p)" = "$SCRATCH/hosts & one.json"
+check 'no BOTD_HOSTS_FILE env in plist' not_contains "$PLIST" 'BOTD_HOSTS_FILE'
 check 'hosts contents are absent' not_contains "$PLIST" 'secret-content'
 check 'render-only does not copy files' missing "$SCRATCH/client & app"
 check 'install succeeds' run --prefix "$SCRATCH/installed"
@@ -94,6 +100,11 @@ if bash "$SCRATCH/fallback/scripts/install-client.sh" --render-only "$SCRATCH/fa
   check 'serve entry selected when relay is absent' contains "$SCRATCH/fallback/render/com.volto.client.plist" '/serve.mjs'
 else
   printf 'not ok - fallback render failed\n'; failures=$((failures + 1))
+fi
+if bash "$SCRATCH/fallback/scripts/install-client.sh" --hosts "$SCRATCH/hosts & one.json" --render-only "$SCRATCH/fallback/render2" > "$OUT" 2>&1; then
+  printf 'not ok - serve fallback unexpectedly accepted --hosts\n'; failures=$((failures + 1))
+else
+  check 'serve fallback rejects --hosts loudly' contains "$OUT" '--hosts requires client-ui/relay.mjs'
 fi
 printf '\n%d checks, %d failures\n' "$checks" "$failures"
 [ "$failures" -eq 0 ]
