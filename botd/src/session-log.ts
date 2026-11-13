@@ -155,7 +155,7 @@ interface SegmentIndex {
 function sessionKey(sid: string): string {
   if (typeof sid !== "string" || sid.length === 0) throw new Error("session id is required");
   const cleaned = sid.replace(/[^A-Za-z0-9._-]/g, "_");
-  if (cleaned === sid && cleaned !== "." && cleaned !== "..") return cleaned;
+  if (cleaned === sid && cleaned !== "." && cleaned !== ".." && cleaned.length <= 200) return cleaned;
   const hash = createHash("sha256").update(sid).digest("hex").slice(0, 12);
   return `${cleaned.slice(0, 48) || "sid"}-${hash}`;
 }
@@ -313,6 +313,9 @@ export class SessionLog {
 
   /** Append an event to a session and return the stored record. */
   append(sid: string, event: SessionEventInput): SessionEvent {
+    if ("payload" in event && event.payload === undefined) {
+      throw new TypeError("payload must be JSON-serializable");
+    }
     const state = this.openSession(sid);
     const record: SessionEvent = {
       seq: state.nextSeq,
@@ -320,7 +323,12 @@ export class SessionLog {
       type: typeof event.type === "string" && event.type.length > 0 ? event.type : "event",
       payload: this.applyRedaction(event.payload),
     };
-    const line = `${JSON.stringify(record)}\n`;
+    let line: string;
+    try {
+      line = `${JSON.stringify(record)}\n`;
+    } catch (error) {
+      throw new TypeError("payload must be JSON-serializable", { cause: error });
+    }
     const buf = Buffer.from(line, "utf8");
     if (state.activeBytes > 0 && state.activeBytes + buf.length > this.maxSegmentBytes) {
       this.rotate(state);
@@ -346,7 +354,10 @@ export class SessionLog {
   /** Read events with `seq >= fromSeq`, at most `limit` of them, in order. */
   read(sid: string, fromSeq = 1, limit = Number.POSITIVE_INFINITY): SessionEvent[] {
     const out: SessionEvent[] = [];
-    if (limit <= 0) return out;
+    if (limit <= 0) {
+      sessionKey(sid);
+      return out;
+    }
     const state = this.openSession(sid);
     for (const segment of state.segments) {
       if (out.length >= limit) break;
