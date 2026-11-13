@@ -1,0 +1,61 @@
+# CI for the bot daemon (botd) and the client UI.
+#
+# The suites are TypeScript and run straight through Node, which strips the
+# types itself: no build step, no bundler, no dependencies to install.
+#
+# Commands:
+#   node --test "botd/test/**/*.test.ts" "client-ui/test/**/*.test.ts"
+#
+# The two suites are independent. A glob that matches no file (a branch that
+# does not carry that suite yet) is skipped instead of failing the run.
+
+name: botd-ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: botd-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: node 24 test suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Show the runtime
+        run: node --version
+
+      - name: Run the botd and client-ui suites
+        run: |
+          set -euo pipefail
+          shopt -s globstar nullglob
+
+          patterns=()
+          for pattern in "botd/test/**/*.test.ts" "client-ui/test/**/*.test.ts"; do
+            if compgen -G "$pattern" > /dev/null; then
+              patterns+=("$pattern")
+            else
+              echo "::notice::no test file matches ${pattern}, skipping it"
+            fi
+          done
+
+          if [ ${#patterns[@]} -eq 0 ]; then
+            echo "No test file found, nothing to run."
+            exit 0
+          fi
+
+          node --test "${patterns[@]}"
