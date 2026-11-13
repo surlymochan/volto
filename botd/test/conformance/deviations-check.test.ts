@@ -36,12 +36,71 @@ function normalize(text: string): string {
   return text.replace(/[`*_]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+/**
+ * The texts of a TypeScript source that count as a reference: its comments and
+ * the titles of its test calls. The scan skips string, template and regular
+ * expression literals, so `"// D1"` or `"test('D2')"` inside a string is data.
+ */
+function referenceTexts(source: string): string[] {
+  const found: string[] = [];
+  const regexAfter = /[(,=:[!&|?{};+\-*%<>~^]/;
+  let last = ""; // the last significant character of the code
+  let i = 0;
+  const readString = (quote: string): string => {
+    let text = "";
+    i += 1;
+    while (i < source.length && source[i] !== quote) {
+      if (source[i] === "\\") i += 1;
+      else if (quote !== "`" && source[i] === "\n") break;
+      text += source[i];
+      i += 1;
+    }
+    i += 1;
+    return text;
+  };
+  while (i < source.length) {
+    const char = source[i];
+    const next = source[i + 1];
+    if (char === "/" && next === "/") {
+      const end = source.indexOf("\n", i);
+      found.push(source.slice(i, end === -1 ? undefined : end));
+      i = end === -1 ? source.length : end;
+    } else if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      found.push(source.slice(i, end === -1 ? undefined : end + 2));
+      i = end === -1 ? source.length : end + 2;
+    } else if (char === '"' || char === "'" || char === "`") {
+      readString(char);
+      last = char;
+    } else if (char === "/" && (last === "" || regexAfter.test(last))) {
+      i += 1; // a regular expression literal
+      let inClass = false;
+      while (i < source.length && (source[i] !== "/" || inClass) && source[i] !== "\n") {
+        if (source[i] === "\\") i += 1;
+        else if (source[i] === "[") inClass = true;
+        else if (source[i] === "]") inClass = false;
+        i += 1;
+      }
+      i += 1;
+      last = "/";
+    } else {
+      const call = /^\b(?:test|it)(?:\.(?:todo|skip|only))?\s*\(\s*(["'`])/.exec(source.slice(i, i + 40));
+      if (call && !/[\w$.]/.test(source[i - 1] ?? "")) {
+        i += call[0].length - 1;
+        found.push(readString(call[1]));
+        last = call[1];
+      } else {
+        if (!/\s/.test(char)) last = char;
+        i += 1;
+      }
+    }
+  }
+  return found;
+}
+
 function unreferenced(items: Deviation[], sources: string[]): Deviation[] {
-  // Only comments and literal test names count, not arbitrary source strings.
-  const references = sources.flatMap((source) => [
-    ...source.matchAll(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g),
-    ...source.matchAll(/\b(?:test|it)(?:\.(?:todo|skip|only))?\s*\(\s*["'`]([^"'`\n]+)["'`]/g),
-  ]).map((match) => normalize(match[1] ?? match[0]));
+  // Only real comments and literal test names count, not arbitrary source strings.
+  const references = sources.flatMap(referenceTexts).map(normalize);
   return items.filter(({ id, title }) => !references.some((reference) =>
     new RegExp(`\\b${id.toLowerCase()}\\b`).test(reference) ||
     (normalize(title).length > 0 && reference.includes(normalize(title))),
@@ -69,6 +128,18 @@ test("parses numbered headings and table rows without counting fenced examples t
 test("finds references in comments and test names, but not ordinary strings or partial ids", () => {
   const items = [{ id: "D1", title: "First case" }, { id: "D2", title: "Second case" }, { id: "D3", title: "Third case" }];
   assert.deepEqual(unreferenced(items, ['// D1\ntest("Second case", () => {});\nconst x = "D3"; // D30']), [items[2]]);
+});
+
+test("text that only looks like a comment or a test call inside a string is not a reference", () => {
+  const items = [{ id: "D1", title: "First case" }, { id: "D2", title: "Second case" }, { id: "D3", title: "Third case" }];
+  const source = [
+    'const a = "// D1";',
+    "const b = 'test(\"D2: Second case\", () => {})';",
+    "const c = `/* D3 */ it('Third case')`;",
+    "const d = /\\/\\/ D1/;",
+  ].join("\n");
+  assert.deepEqual(unreferenced(items, [source]), items);
+  assert.deepEqual(unreferenced(items, [`${source}\n// D1\ntest.todo("D3: later");`]), [items[1]]);
 });
 
 test("every documented deviation is referenced by a conformance test", () => {
