@@ -15,7 +15,7 @@ import {
   selectHostSessions,
   selectSession,
 } from "./state.ts";
-import type { PendingPermission, UiAction, UiState } from "./state.ts";
+import type { HostStatus, PendingPermission, UiAction, UiState } from "./state.ts";
 
 /** How often the panel refreshes bots and lease countdowns, in milliseconds. */
 export const POLL_MS = 1000;
@@ -50,8 +50,12 @@ export function createPanel(options: PanelOptions): Panel {
   const subscriptions = new Map<string, () => void>();
 
   let timer: ReturnType<typeof setInterval> | null = null;
+  let destroyed = false;
+  let polling: Promise<void> | null = null;
+  const pollStatuses = new Map<string, HostStatus>();
 
   function dispatch(action: UiAction): void {
+    if (destroyed) return;
     state = reduce(state, action);
     render();
   }
@@ -72,6 +76,7 @@ export function createPanel(options: PanelOptions): Panel {
 
   async function refreshBots(alias: string): Promise<void> {
     const bots = await client.listBots(alias);
+    if (destroyed) return;
     dispatch({ type: "bots/loaded", host: alias, bots });
     for (const bot of bots) {
       if (!bot.sessionId) continue;
@@ -387,13 +392,37 @@ export function createPanel(options: PanelOptions): Panel {
 
   /* ----------------------------------------------------------------- boot */
 
-  async function tick(): Promise<void> {
-    dispatch({ type: "clock/tick", now: Date.now() });
+  function tick(): Promise<void> {
+    if (polling) return polling;
+    if (destroyed) return Promise.resolve();
     const alias = state.selectedHost;
-    if (alias === null) return;
     const host = state.hosts.find((entry) => entry.alias === alias);
-    if (!host || host.status !== "connected") return;
-    await refreshBots(alias);
+    const previousStatus = alias === null ? undefined : pollStatuses.get(alias);
+    const status = previousStatus ?? host?.status;
+    dispatch({ type: "clock/tick", now: Date.now() });
+    polling = (async () => {
+      try {
+        const hosts = await client.listHosts();
+        if (destroyed) return;
+        dispatch({ type: "hosts/loaded", hosts });
+        if (alias !== null && status === "connected") await refreshBots(alias);
+        if (destroyed) return;
+        dispatch({ type: "error/set", message: null });
+        if (alias !== null && previousStatus !== undefined) {
+          dispatch({ type: "host/status", alias, status: previousStatus });
+          pollStatuses.delete(alias);
+        }
+      } catch (error) {
+        if (destroyed) return;
+        const message = messageOf(error);
+        dispatch({ type: "error/set", message });
+        if (alias !== null && status !== undefined) {
+          pollStatuses.set(alias, status);
+          dispatch({ type: "host/status", alias, status: "error", error: message });
+        }
+      }
+    })().finally(() => { polling = null; });
+    return polling;
   }
 
   return {
@@ -401,7 +430,7 @@ export function createPanel(options: PanelOptions): Panel {
       wireAddHost();
       dispatch({ type: "clock/tick", now: Date.now() });
       await loadHosts();
-      if (pollMs > 0) {
+      if (!destroyed && pollMs > 0) {
         timer = setInterval(() => {
           void tick();
         }, pollMs);
@@ -412,6 +441,7 @@ export function createPanel(options: PanelOptions): Panel {
     },
     tick,
     destroy(): void {
+      destroyed = true;
       if (timer !== null) clearInterval(timer);
       timer = null;
       for (const unsubscribe of subscriptions.values()) unsubscribe();
