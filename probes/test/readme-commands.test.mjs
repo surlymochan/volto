@@ -177,7 +177,7 @@ function globMatches(pattern) {
 }
 
 /**
- * Every probe source below probes/ as one text.
+ * Every production probe source below probes/ (not probes/test) as one text.
  *
  * @returns {string}
  */
@@ -187,8 +187,10 @@ function probeSources() {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       if (entry.name.startsWith(".")) continue;
       const full = join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (entry.name.endsWith(".mjs")) files.push(full);
+      // The test suite itself names these strings; scanning it would let the assertions pass vacuously.
+      if (entry.isDirectory()) {
+        if (full !== join(probesDir, "test")) walk(full);
+      } else if (entry.name.endsWith(".mjs")) files.push(full);
     }
   };
   walk(probesDir);
@@ -196,11 +198,16 @@ function probeSources() {
 }
 
 test("every file path named in a README code block exists", () => {
-  const blocks = codeBlocks(readme).filter((candidate) => /^(?:sh|bash|shell)$/.test(candidate.language));
-  assert.ok(blocks.length > 0, "the README has no sh code block");
-  const paths = [...blocks.map((block) => block.code).join("\n").matchAll(/\bprobes\/[A-Za-z0-9_.*/-]+/g)].map((match) =>
-    match[0].replace(/\/+$/, ""),
-  );
+  const blocks = codeBlocks(readme);
+  assert.ok(blocks.some((candidate) => /^(?:sh|bash|shell)$/.test(candidate.language)), "the README has no sh code block");
+  // Repository paths in any fenced block, whatever its language, relative to the repository root.
+  // The runtime directories are git ignored and created by the runner.
+  const ignored = /^probes\/(?:out|\.tmp)(?:\/|$)/;
+  const paths = [...blocks.map((block) => block.code).join("\n").matchAll(
+    /(?<![\w./-])(?:probes|botd|client-ui|scripts|tools|python)\/[A-Za-z0-9_.*/-]+/g,
+  )]
+    .map((match) => match[0].replace(/[/.]+$/, ""))
+    .filter((path) => !ignored.test(path));
   assert.ok(paths.length >= 3, "the usage block names no path");
   for (const path of paths) {
     if (path.includes("*")) {
@@ -305,6 +312,12 @@ test("the documented machine protocol matches the probe module", () => {
       protocolHead(row.protocol),
       protocolHead(probe.protocol),
       `the protocol of ${row.bot} does not match probes/bots/${probe.id}.mjs`,
+    );
+    // A documented (or implemented) print mode fallback must exist on both sides.
+    assert.equal(
+      /print mode as fallback/i.test(row.protocol),
+      /print mode as fallback/i.test(probe.protocol),
+      `the fallback of ${row.bot} differs between the README and probes/bots/${probe.id}.mjs`,
     );
   }
 });
