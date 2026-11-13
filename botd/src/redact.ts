@@ -40,6 +40,9 @@ interface Token {
 const PRIVATE_KEY_BLOCK =
   /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g;
 
+/** User components of common home paths, leaving the rest readable. */
+const HOME_PATH = /(?<![A-Za-z0-9_./\\-])((?:\/Users\/|\/home\/|[A-Za-z]:\\Users\\))([^\s/\\<>"':;,]+)|(?<![A-Za-z0-9_./~-])(~)([A-Za-z0-9_][A-Za-z0-9_.-]*)(?=\/)/g;
+
 /** Words that introduce a secret when used as a key. */
 const SECRET_KEY_WORDS =
   "api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?token|" +
@@ -190,6 +193,9 @@ export function redactText(text: string, options: RedactOptions = {}): string {
   out = out.replace(KEY_VALUE_PAIR, maskKeyValuePair);
   out = out.replace(BEARER_TOKEN, `$1$2${REDACTED}`);
   for (const pattern of SECRET_PATTERNS) out = out.replace(pattern, REDACTED);
+  out = out.replace(HOME_PATH, (_match, prefix: string, _user: string, tilde: string) =>
+    `${prefix ?? tilde}<user>`,
+  );
   if (options.hostMask) out = maskHosts(out);
   return out;
 }
