@@ -11,6 +11,7 @@ the control plane. The wire format is specified in
 * [Leases, acknowledgements and reconnects](#leases-acknowledgements-and-reconnects)
 * [The permission policy](#the-permission-policy)
 * [Redaction](#redaction)
+* [Metrics and orchestration](#metrics-and-orchestration)
 * [Collecting a debug log](#collecting-a-debug-log)
 * [Configuration](#configuration)
 * [Common failures](#common-failures)
@@ -20,7 +21,7 @@ the control plane. The wire format is specified in
 From a clone of this repository:
 
 ```sh
-bash scripts/install-botd.sh <ssh-alias> [--prefix <dir>] [--dry-run]
+bash scripts/install-botd.sh <ssh-alias> [--prefix <dir>] [--ensure-node] [--dry-run]
 ```
 
 `<ssh-alias>` is the name of the executor host in the operator's ssh config.
@@ -30,21 +31,60 @@ variables. `--prefix` defaults to `~/.volto-botd` and has to be an absolute
 path or start with `~/`. `--dry-run` prints the plan and exits without
 contacting the host.
 
-The installer prints one status line per step:
+### The node of the host
+
+The daemon runs on the node of the host: node strips the types of the sources
+itself, so there is no build step. The installer checks the node of the host
+in its first step:
+
+* the host needs **node 22.22 or newer** — that is what volto supports. The
+  floor the installer itself enforces is `MIN_NODE_VERSION` in
+  [../scripts/install-botd.sh](../scripts/install-botd.sh) (node 22.18, the
+  first release that strips types without a flag); a host below that floor is
+  refused.
+* **node 24 is preferred.** A host below node 24 is accepted, the preflight
+  line ends with "node 24 recommended" and the install continues.
+* a host without any node is refused, unless `--ensure-node` is given.
+
+With `--ensure-node` the installer may put a private node 24 into the prefix:
+the official tarball from nodejs.org/dist, its checksum verified against the
+published `SHASUMS256.txt`, unpacked into `<prefix>/node`. Nothing outside
+the prefix is touched, sudo is never used and the launcher prefers the
+private node over the one of the host. The release is `v24.3.0`;
+`VOLTO_NODE_VERSION` may point at another 24.x patch release.
+
+The installer prints one status line per step. Without `--ensure-node` the
+plan has six steps; with it, the private node is step 2 and the plan has
+seven:
 
 | step | what it does |
 | --- | --- |
-| 1 preflight | the host must run `node >= 22` |
-| 2 directories | create `<prefix>/app` and `<prefix>/bin` on the host |
-| 3 sync | copy `botd/` (without `test/` and `node_modules/`) into `<prefix>/app` |
-| 4 wrapper | install the `<prefix>/bin/botd` launcher |
-| 5 link | symlink `~/.local/bin/botd` to `<prefix>/bin/botd` |
-| 6 verify | run `botd --version` on the host |
+| 1 preflight | the host must run `node >= 22.18`; below node 24 the line ends with "node 24 recommended" |
+| 2 node | only with `--ensure-node` and only when the host has no node 24: install a private node 24 into `<prefix>/node` |
+| 3 directories | create `<prefix>/app` and `<prefix>/bin` on the host |
+| 4 sync | copy `botd/` (without `test/`, `node_modules/` and `.tmp/`) into `<prefix>/app` |
+| 5 wrapper | install the `<prefix>/bin/botd` launcher |
+| 6 link | symlink `~/.local/bin/botd` to `<prefix>/bin/botd` |
+| 7 verify | run `botd --version` on the host |
 
-The launcher is a two-line shell script; it runs the typed sources of the
+The `node` step is skipped when the host already runs node 24, and the
+numbers then shift down by one: `2 directories`, `3 sync`, `4 wrapper`,
+`5 link`, `6 verify`.
+
+The launcher is a small shell script; it runs the typed sources of the
 daemon with the type stripping of node:
 
 ```sh
+exec node --experimental-strip-types <prefix>/app/src/main.ts "$@"
+```
+
+With a private node the launcher prefers it and falls back to the node of
+the host:
+
+```sh
+if [ -x <prefix>/node/bin/node ]; then
+  exec <prefix>/node/bin/node --experimental-strip-types <prefix>/app/src/main.ts "$@"
+fi
 exec node --experimental-strip-types <prefix>/app/src/main.ts "$@"
 ```
 
@@ -87,11 +127,11 @@ be on the `PATH` of the user that runs the daemon.
 | `dsh` | `dsh` | `dsh --profile acp` | ACP |
 | `agy` | `agy` | `agy --acp`, or `agy -p --output-format stream-json` | ACP, with a stream-json fallback |
 | `copilot` | `copilot` | `copilot --acp` | ACP |
-| `pi` | `pi` | *not in this build* (see below) | pi RPC |
+| `pi` | `pi` | `pi --mode rpc` | pi RPC |
 
 Extra flags the adapters add: `--model <model>`, `--resume <provider
 session id>` and `--append-system-prompt <text>` for `claude`, `--model
-<model>` for `agy` and `copilot`, `--reasoning-effort <level>` for
+<model>` for `agy`, `copilot` and `pi`, `--reasoning-effort <level>` for
 `copilot`, and `--resume` plus `--append-system-prompt` for `agy` in its
 stream-json mode. `codex` and `dsh` add no flags.
 
@@ -108,10 +148,14 @@ Environment:
   uses `agy --acp`, otherwise it falls back to the Claude-compatible
   stream-json mode. `VOLTO_AGY_PROTOCOL=acp` (or `=stream-json`) pins the
   choice.
-* `pi` is **not part of this build**: the registry knows the kind, but
-  `src/adapters/pi.ts` is missing, so every call fails with "the pi adapter
-  is not available in this build". The pi CLI itself speaks `pi --mode rpc`
-  (see [../probes/README.md](../probes/README.md)).
+* `pi` is **part of this build**: [src/adapters/pi.ts](src/adapters/pi.ts)
+  starts `pi --mode rpc` and speaks the pi RPC protocol (one JSON object per
+  line). The registry loads the module lazily, so a tree without it still
+  starts and only the `pi` kind stays disabled. The adapter resumes a
+  session by the path of the session file pi persisted, and it ignores the
+  reasoning effort and the system prompt — the pi RPC surface known here has
+  no counterpart for them. The pi CLI itself speaks `pi --mode rpc` (see
+  [../probes/README.md](../probes/README.md)).
 
 ## Leases, acknowledgements and reconnects
 
@@ -229,6 +273,29 @@ input always yields the same output, and the input is never modified.
   is written. If the hook throws, the payload is stored as `null`: a broken
   hook fails closed instead of leaking the raw payload into the log.
 
+## Metrics and orchestration
+
+Two modules of `botd/src/` belong to the control plane side of volto and are
+**not called by the daemon yet**. They are documented here so that nobody
+goes looking for them in the daemon:
+
+* **[src/metrics.ts](src/metrics.ts)** — a small, dependency free,
+  in-process metrics registry: counters, gauges and histograms with fixed
+  buckets, a JSON snapshot and the Prometheus text exposition format. It
+  stays completely inside the process: there is no server, no network
+  traffic and no background task. The families botd cares about are
+  pre-registered: `botd_sessions_total`, `botd_sessions_active`,
+  `botd_events_total`, `botd_reconnects_total`,
+  `botd_cancel_escalations_total` and the histogram
+  `botd_event_latency_seconds`.
+* **[src/orchestrator.ts](src/orchestrator.ts)** — `runTask()` runs one task
+  on a bot: the collaboration router ([src/router.ts](src/router.ts)) picks
+  the bot, the adapter starts it, the normalized events are streamed to the
+  caller, and the watchdog plus the cancel escalation stop a turn that hangs
+  (a silent bot is cancelled after 120 s, the escalation waits 5 s per step
+  and a task is given up on after 3 bots). Everything the orchestrator
+  touches is injected, so the whole flow runs without a real bot.
+
 ## Collecting a debug log
 
 What the daemon writes today:
@@ -301,8 +368,8 @@ variable is the fallback.
 
 | what you see | what it means | what to do |
 | --- | --- | --- |
-| `node v20.11.0 is older than 22` (step 1 of the installer) | the host runs a node that is too old | install node 24 on the host, run the installer again |
-| `[6/6] verify: FAILED (…)` | the launcher did not answer `botd --version` | run `botd --version` on the host by hand; check the node version and that `<prefix>/app/src/main.ts` was copied |
+| `node v20.11.0 is older than 22.18` (step 1 of the installer) | the host runs a node that is older than the floor of the installer | install node 24 on the host, or run the installer with `--ensure-node` (it then installs a private node 24 into the prefix) |
+| `[6/6] verify: FAILED (…)` (`[7/7]` with `--ensure-node`) | the launcher did not answer `botd --version` | run `botd --version` on the host by hand; check the node version and that `<prefix>/app/src/main.ts` was copied |
 | error `no_lease` ("send hello before other frames") | a frame was sent before `hello` | send `hello` first; the daemon answers with the lease id and the fence |
 | error `stale_fence` | another client took the lease over, or the fence is too old | reconnect with `hello`; the fence of the new lease is higher |
 | error `stale_lease` ("unknown lease …") | the lease id does not belong to the current lease | reconnect with `hello` |
@@ -317,6 +384,6 @@ variable is the fallback.
 | a `gap` frame after a reconnect | the events were evicted from the ring buffer (1000 events or 1 MiB) | accept the loss and start a new task; raise the limits with `BOTD_RING_MAX_EVENTS` and `BOTD_RING_MAX_BYTES` |
 | a `stall` frame | the bot printed nothing for 30 s | look at the CLI; raise the threshold with `BOTD_STALL_MS` |
 | "the copilot adapter is disabled: set COPILOT_ENABLED=1 …" | the copilot adapter needs a paid seat and ships disabled | set `COPILOT_ENABLED=1` in the environment of the daemon, if you have a seat |
-| "the pi adapter is not available in this build (botd/src/adapters/pi.ts is missing)" | the pi adapter is not part of this build | see "Coming" in the [README](../README.md) |
+| "the pi adapter is not available in this build (botd/src/adapters/pi.ts is missing)" | the optional pi module is not on the host | copy `botd/src/adapters/pi.ts` into `<prefix>/app/src/adapters/` (the installer copies the whole `botd/` directory) |
 | `agy` behaves like Claude Code | `agy --help` did not mention ACP, so the adapter chose the stream-json fallback | pin the protocol with `VOLTO_AGY_PROTOCOL=acp` |
 | the panel shows mock hosts only | the panel always uses the mock client today | see "Coming" in the [README](../README.md) |

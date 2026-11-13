@@ -1,0 +1,29 @@
+{
+  "name": "@example/widget-app",
+  "version": "0.1.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "@example/widget-app",
+      "version": "0.1.0",
+      "dependencies": {
+        "@example/core": "^1.2.0"
+      },
+      "devDependencies": {
+        "@example/test-kit": "~2.0.1"
+      },
+      "optionalDependencies": {
+        "@example/widget-linux-x64": "1.2.0"
+      }
+    },
+    "node_modules/@example/core": {
+      "version": "0.9.0"
+    },
+    "node_modules/@example/test-kit": {
+      "version": "2.0.1"
+    },
+    "node_modules/@example/widget-linux-x64": {
+      "version": "1.2.0"
+    }
+  }
+}
