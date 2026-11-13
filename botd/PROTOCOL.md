@@ -60,22 +60,22 @@ holder; the failures of a connection are answered to it.
 * `hello` is the first frame of a connection; every other frame before it is
   answered with `error` and `code:"no_lease"`. The lease is a triple of
   `leaseId` (a UUID), `fence` (a counter) and the TTL in milliseconds.
-* A `hello` with the same `clientId` keeps the lease id and the fence; a
-  `hello` with another `clientId` takes the lease over: it gets a new lease
-  id and a higher fence, and the frames of the old client are refused with
-  `code:"stale_fence"`.
-* The TTL is 15000 ms by default (`--lease-ttl-ms`) and never below 250 ms;
-  the answer of `hello` carries the effective TTL.
-* `renew` extends the lease by its current TTL and is not answered; the
-  client renews every third of the TTL (`botd/src/client.ts`). A renewal
-  without a lease is refused with `code:"no_lease"`, a wrong fence with
-  `code:"stale_fence"` and a wrong lease id with `code:"stale_lease"`.
+* A `hello` with the same `clientId` keeps the lease id and the fence. A
+  `hello` with another `clientId` takes an expired lease over (new lease id,
+  higher fence; the old client gets `code:"stale_fence"`) and is refused with
+  `code:"lease_conflict"` while the lease is `ok`.
+* The TTL is 15000 ms by default (`--lease-ttl-ms`), at least 250 ms and at
+  most one year; the answer of `hello` carries the effective TTL.
+* `renew` extends the lease by its TTL and is not answered; the client
+  renews every third of the TTL (`botd/src/client.ts`). Refused: without a
+  lease `no_lease`, wrong fence `stale_fence`, wrong lease id `stale_lease`,
+  at or after the first deadline `lease_expired` (send `hello` instead).
 * The lease has two deadlines: `renewedAt + ttl` and `renewedAt + 2 * ttl`.
   At the first one the lease is *paused*: the children stay alive, every
   session becomes `paused` and `send` is refused with `code:"lease_paused"`.
   At the second one the lease is *dead* and the children are terminated
-  (SIGTERM, then SIGKILL after 3 s). A `hello` or a `renew` wakes the paused
-  sessions up.
+  (SIGTERM, then SIGKILL after 3 s). A `hello`, or a `renew` before the
+  first deadline, wakes the paused sessions up.
 
 ## 4. Sessions, sequence numbers, acknowledgements and the ring buffer
 
@@ -140,6 +140,8 @@ Every error is a frame with `op:"error"`, a `code` and a `message`.
 | `no_lease` | a frame arrived before `hello`, or a renewal without a lease |
 | `stale_fence` | the fence of the connection is not the current fence |
 | `stale_lease` | the lease id of a renewal is unknown |
+| `lease_expired` | a renewal arrived after the lease expired; send `hello` again |
+| `lease_conflict` | a `hello` of another client while the lease is still live |
 | `session_exists` | the `sid` of `open` is already live |
 | `unknown_session` | the `sid` is unknown |
 | `lease_paused` | the lease expired, the input is not forwarded |
@@ -152,15 +154,13 @@ Every error is a frame with `op:"error"`, a `code` and a `message`.
 * The daemon announces its version in the answer to `hello`: `botdVersion`
   is `BOTD_VERSION` of `botd/src/protocol.ts` (0.1.0 today).
 * There is no version field on the wire and no negotiation: the client reads
-  the version of the answer and decides whether it can talk to the daemon.
-  Inside one version fields may be added and new ops may appear: an unknown
-  op of the client is refused with `code:"bad_frame"`, an unknown op of the
-  daemon is ignored by the client (`botd/src/client.ts`).
+  the version of the answer and decides. Fields and ops may be added inside
+  one version: an unknown client op is refused with `code:"bad_frame"`, an
+  unknown daemon op is ignored by the client (`botd/src/client.ts`).
 
 ## 9. Examples
 
 `→` is a frame of the control plane, `←` a frame of `botd` (synthetic ids).
-
 ### Example 1 — a session that runs
 
 ```
