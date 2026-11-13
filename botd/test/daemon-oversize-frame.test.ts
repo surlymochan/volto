@@ -42,6 +42,20 @@ function assertErrorAndRecovery(frames: Array<{ op: string; code?: string }>) {
 
 test("an oversized line is rejected and the next frame is answered", options, (t) => {
   const { input, frames } = harness(t);
+  // Valid JSON of limit+1 bytes: only the size guard can reject it, so a missing guard
+  // would answer with "hello" instead of an error.
+  const prefix = '{"op":"hello","clientId":"client","padding":"';
+  const suffix = '"}';
+  const line = prefix + "x".repeat(MAX_FRAME_BYTES + 1 - Buffer.byteLength(prefix + suffix)) + suffix;
+  assert.equal(Buffer.byteLength(line), MAX_FRAME_BYTES + 1);
+  assert.doesNotThrow(() => JSON.parse(line));
+  input.write(`${line}\n${hello}`);
+  assertErrorAndRecovery(frames);
+  assert.equal(frames[0].code, "bad_json");
+});
+
+test("an oversized non-JSON line is rejected and the next frame is answered", options, (t) => {
+  const { input, frames } = harness(t);
   input.write(`${"x".repeat(MAX_FRAME_BYTES + 1)}\n${hello}`);
   assertErrorAndRecovery(frames);
   assert.equal(frames[0].code, "bad_json");
