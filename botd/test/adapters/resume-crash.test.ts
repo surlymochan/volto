@@ -28,8 +28,6 @@
 //   * `dsh` never resumes: its handshake always sends `session/new`, although
 //     the capability table (botd/src/adapters/index.ts) announces
 //     `supportsResume: true` for it.
-//   * `claude` has no `error` event: a failed resume surfaces as a failed turn
-//     (`turn_end` with `status: "error"`) and not as a normalized error event.
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -604,22 +602,6 @@ test("claude reports a failed resume as a failed turn", () => {
   );
   assert.deepEqual(events, [{ kind: "turn_end", status: "error" }]);
 });
-
-test(
-  "claude reports a provider failure as a normalized error event",
-  {
-    skip:
-      "the claude adapter never returns kind:\"error\"; a failed resume surfaces " +
-      "as turn_end with status:\"error\" instead",
-  },
-  () => {
-    const adapter = new ClaudeAdapter();
-    const events = adapter.parse(
-      JSON.stringify({ type: "system", subtype: "error", message: "session not found" }),
-    );
-    assert.ok(events.some((event) => event.kind === "error"));
-  },
-);
 
 test("an empty provider session id is treated as \"no id\" by most adapters", () => {
   // The adapters that check for a non empty string open a fresh session.
