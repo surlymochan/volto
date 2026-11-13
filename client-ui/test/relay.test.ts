@@ -1,13 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, chmod, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, chmod, rm, stat } from "node:fs/promises";
 import { resolve, join } from "node:path";
-import { tmpdir } from "node:os";
 import { request as httpRequest } from "node:http";
 import { startRelay } from "../relay.mjs";
 import { daemonCommand } from "../../botd/src/client.ts";
 
-const removeDir = (dir: string) => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+const removeDir = (dir: string) => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
 
 const waitFor = async (predicate: () => Promise<boolean>) => {
   const end = Date.now() + 10000;
@@ -16,7 +15,8 @@ const waitFor = async (predicate: () => Promise<boolean>) => {
 };
 
 test("relay bridges a real daemon, replays redacted events and logs frames", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "relay-"));
+  await mkdir(".tmp", { recursive: true });
+  const dir = await mkdtemp(resolve(".tmp/relay-"));
   const fixture = resolve("botd/test/fixtures/fake-child.mjs");
   const binary = join(dir, "codex");
   await writeFile(binary, `#!${process.execPath}\nimport ${JSON.stringify(fixture)};\nprocess.stdin.on('data', () => process.stdout.write(JSON.stringify({method:'item/agentMessage/delta',params:{delta:'secret sk-abcdefghijklmnopqrstuv'}})+'\\n'));\n`);
@@ -80,10 +80,12 @@ test("relay bridges a real daemon, replays redacted events and logs frames", asy
     assert.equal((await post("/api/hosts/test/disconnect")).status, 204);
     assert.equal((await post(`/api/sessions/${sessionId}/send`, { text: "late" })).status, 409);
   } finally {
+    if (oldPath === undefined) delete process.env.PATH;
+    else process.env.PATH = oldPath;
     try {
       relay.server.closeAllConnections(); await new Promise<void>(resolveClose => relay.server.close(() => resolveClose()));
     } finally {
-      process.env.PATH = oldPath; await removeDir(dir);
+      await removeDir(dir);
     }
   }
 });
