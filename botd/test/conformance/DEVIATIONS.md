@@ -3,7 +3,7 @@
 The tests of this directory check the daemon against `botd/PROTOCOL.md`, the
 normative document of the wire protocol. This file records
 
-* the cases where the daemon does **not** do what the document says (D1), and
+* the historical deviation that has been fixed (D1), and
 * the cases of the task card that belong to a **retired** version of the
   document: the protocol of `botd/PROTOCOL.md` before commit `81488ee`
   ("docs: reconcile botd PROTOCOL.md with the implemented wire protocol").
@@ -12,13 +12,12 @@ normative document of the wire protocol. This file records
   `prompt` and `ready`. The current document (§2, §8) has none of them and
   the daemon follows the current document.
 
-Neither `botd/src` nor `botd/PROTOCOL.md` is changed by this card. Every case
-below is marked in the test suite with a `test.todo` that names the section of
-the document, so that the deviation stays visible.
+Retired cases remain marked in the test suite with a `test.todo` naming the
+section of the document.
 
 | # | section | case | state |
 | --- | --- | --- | --- |
-| D1 | §3 | a frame before `hello` on a second connection | **the daemon deviates**: it answers `stale_fence`, the document wants `no_lease` |
+| D1 | §3 | a frame before `hello` on a second connection | **fixed**: pre-hello frames now receive `no_lease` |
 | D2 | §2, §8 | the envelope (`v`, `seq`, `ack`) | retired: the document has no envelope, the daemon has none |
 | D3 | §1 | the size limit of a frame | retired: the limit is 8 MiB (`MAX_FRAME_BYTES`), not 1 MiB |
 | D4 | §1, §7, §8 | the codes `invalid_frame` and `unknown_op` | retired: the codes are `bad_json` and `bad_frame` |
@@ -32,7 +31,7 @@ control plane, `←` a frame of `botd`. The ids are synthetic.
 **The document (§3):** "`hello` is the first frame of a connection; every
 other frame before it is answered with `error` and `code:"no_lease"`."
 
-**The daemon:** `botd/src/daemon.ts` looks at the lease before it looks at
+**Historical behavior:** `botd/src/daemon.ts` looked at the lease before it looks at
 the fence of the connection. While no lease is held the frame is refused
 with `no_lease`, but as soon as another connection holds the lease the fence
 of the connection (`null` before the `hello`) is compared with the fence of
@@ -54,7 +53,8 @@ document says:
 ```
 
 **Test:** `test/conformance/lease.test.ts` — "PROTOCOL.md §3: a frame before
-hello is answered with no_lease" (`test.todo`).
+hello is answered with no_lease". The daemon now checks the connection before
+comparing its fence, including for renewals.
 
 ## D2 — there is no envelope
 
