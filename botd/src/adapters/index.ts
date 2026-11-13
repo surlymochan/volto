@@ -80,7 +80,7 @@ const dshRow: AdapterCapability = {
   kind: "dsh",
   family: "deepseek",
   protocol: "acp",
-  supportsResume: true,
+  supportsResume: false,
   supportsCancel: true,
   enabled: true,
 };
