@@ -39,9 +39,14 @@ function headings(markdown: string): string[] {
   return result;
 }
 
+/** Exported `*Frame` types whose declaration has an object member with an `op` property, at any position. */
 function frameTypes(source: string): string[] {
-  return [...source.matchAll(/\bexport\s+type\s+(\w*Frame)\s*=\s*\|?\s*\{\s*op\s*:/g)]
-    .map((match) => match[1] as string);
+  const heads = [...source.matchAll(/\bexport\s+type\s+(\w*Frame)\s*=/g)];
+  return heads.filter((head) => {
+    const rest = source.slice((head.index as number) + head[0].length);
+    const end = rest.search(/^(?:export\s+|declare\s+)?(?:type|interface|const|let|function|class)\b/m);
+    return /\{[^{}]*?\b(?:readonly\s+)?op\??\s*:/.test(end === -1 ? rest : rest.slice(0, end));
+  }).map((head) => head[1] as string);
 }
 
 test("extracts literal error codes from properties and named unions", () => {
@@ -65,6 +70,11 @@ test("the names of wire frame types are documented", () => {
   const names = frameTypes(`${protocol}\n${frames}`);
   assert.ok(names.includes("ClientFrame") && names.includes("ServerFrame"), "wire frame types were not found");
   for (const name of names) assert.ok(doc.includes(name), `frame type ${name} is missing from PROTOCOL.md`);
+});
+
+test("finds frame types whose op property is not the first member", () => {
+  assert.deepEqual(frameTypes(`export type LateFrame = { sid: string; op: "late" };
+    export type PlainFrame = { sid: string };`), ["LateFrame"]);
 });
 
 test("heading extraction ignores fenced examples and normalizes headings", () => {
