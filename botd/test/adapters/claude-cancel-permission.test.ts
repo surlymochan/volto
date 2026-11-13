@@ -17,14 +17,21 @@ test("cancel prevents a late allow for a pending permission", () => {
   assert.equal(adapter.answerPermission("req-1", true), null);
 });
 
-test("cancel prevents a late denial for a pending permission", () => {
+test("a late denial after cancel still answers the request with deny", () => {
   const adapter = new ClaudeAdapter();
   adapter.parse(permissionLine("req-1"));
   adapter.cancel({});
-  assert.equal(adapter.answerPermission("req-1", false), null);
+  assert.deepEqual(adapter.answerPermission("req-1", false), {
+    type: "control_response",
+    response: {
+      subtype: "success",
+      request_id: "req-1",
+      response: { behavior: "deny", message: "Permission denied by user" },
+    },
+  });
 });
 
-test("cancel clears all pending permissions and still returns an interrupt", () => {
+test("cancel blocks a late allow for all pending permissions and still returns an interrupt", () => {
   const adapter = new ClaudeAdapter();
   adapter.parse(permissionLine("req-1"));
   adapter.parse(permissionLine("req-2"));

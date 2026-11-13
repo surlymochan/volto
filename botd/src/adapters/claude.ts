@@ -126,8 +126,9 @@ export class ClaudeAdapter implements BotAdapter {
 
   /** Cancel = provider-native "interrupt" control request on stdin. */
   cancel(_ctx: { providerSessionId?: string }): unknown[] {
+    // A cancelled turn may no longer allow a pending permission: it stays
+    // known, but from now on it can only be denied.
     for (const id of this.pendingPermissions.keys()) this.cancelledPermissions.add(id);
-    this.pendingPermissions.clear();
     return [
       {
         type: "control_request",
@@ -140,7 +141,12 @@ export class ClaudeAdapter implements BotAdapter {
   /** Answer a permission prompt with a provider-native control response. */
   answerPermission(id: string, allow: boolean): unknown | null {
     const request = this.pendingPermissions.get(id);
-    if (this.cancelledPermissions.has(id)) return null;
+    // A late allow of a cancelled turn is never honored; a late deny still is.
+    if (this.cancelledPermissions.has(id)) {
+      this.cancelledPermissions.delete(id);
+      this.pendingPermissions.delete(id);
+      if (allow) return null;
+    }
     const input = request ? request.input : undefined;
     const response = allow
       ? { behavior: "allow", updatedInput: isRecord(input) ? input : {} }
@@ -301,6 +307,7 @@ export class ClaudeAdapter implements BotAdapter {
       const oldest = this.pendingPermissions.keys().next();
       if (oldest.done) break;
       this.pendingPermissions.delete(oldest.value);
+      this.cancelledPermissions.delete(oldest.value);
     }
   }
 
