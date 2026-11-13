@@ -2,7 +2,7 @@
 // Local panel and botd bridge. --frame-log (or BOTD_FRAME_LOG) appends M0
 // transcripts as NDJSON: {ts: epoch milliseconds, host: display or alias,
 // kind: UI bot kind or null, dir: "c2s" | "s2c", frame: redacted wire frame}.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, openSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { Transform } from "node:stream";
@@ -43,6 +43,7 @@ function tap(host, transport, log, sessions) {
 }
 
 export async function startRelay({ hosts = [], port = 0, frameLog = process.env.BOTD_FRAME_LOG } = {}) {
+  if (frameLog) { closeSync(openSync(frameLog, "a", 0o600)); chmodSync(frameLog, 0o600); }
   const entries = new Map();
   const sessions = new Map();
   const permissions = new Map();
@@ -80,7 +81,7 @@ export async function startRelay({ hosts = [], port = 0, frameLog = process.env.
         else if (event.kind === "error") emit(session, { kind: "turn_end", status: "error" });
       }
     });
-    client.on("state", ({ sid, state }) => { const session = sessions.get(sid); if (session && state === "exited") { session.bot.sessionId = null; session.bot.status = host.connected ? "idle" : "down"; } });
+    client.on("state", ({ sid, state }) => { const session = sessions.get(sid); if (session && state === "exited") { session.bot.sessionId = null; session.bot.status = host.connected ? "idle" : "down"; setTimeout(() => sessions.delete(sid), 60000).unref(); } });
     return client.start().catch(async error => { await client.stop(); if (host.client === client) host.client = null; throw error; });
   }
   const panel = await startServer({ port });
@@ -89,6 +90,12 @@ export async function startRelay({ hosts = [], port = 0, frameLog = process.env.
   server.on("request", (req, res) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (!url.pathname.startsWith("/api/")) { staticHandler(req, res); return; }
+    // Host/Origin guard: blocks DNS rebinding and cross-site requests against the local API.
+    const allowedHosts = [`127.0.0.1:${panel.port}`, `localhost:${panel.port}`];
+    const type = req.headers["content-type"];
+    if (!allowedHosts.includes(req.headers.host ?? "") || (req.headers.origin !== undefined && !allowedHosts.some(h => req.headers.origin === `http://${h}`)) || (req.method === "POST" && type !== undefined && !/^application\/json\s*(;|$)/i.test(type))) {
+      res.writeHead(403, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { code: "forbidden", message: "Forbidden" } })); return;
+    }
     void (async () => {
       const parts = url.pathname.split("/").slice(2).map(decodeURIComponent);
       const body = async () => { let raw = ""; for await (const chunk of req) { raw += chunk; if (raw.length > 1024 * 1024) throw bad(400, "invalid_body", "Invalid body"); } let value; try { value = JSON.parse(raw); } catch { throw bad(400, "invalid_body", "Invalid body"); } if (!value || typeof value !== "object" || Array.isArray(value)) throw bad(400, "invalid_body", "Invalid body"); return value; };
@@ -117,7 +124,7 @@ export async function startRelay({ hosts = [], port = 0, frameLog = process.env.
       if (parts[0] === "sessions" && parts.length === 3) {
         const session = sessionFor(parts[1]);
         if (parts[2] === "events" && req.method === "GET") { res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" }); res.flushHeaders(); const last = Number(req.headers["last-event-id"] ?? 0); for (const item of session.events) if (item.id > (Number.isFinite(last) ? last : 0)) res.write(`id: ${item.id}\ndata: ${JSON.stringify(item.data)}\n\n`); session.listeners.add(res); const timer = setInterval(() => res.write(": ping\n\n"), 15000); res.on("close", () => { clearInterval(timer); session.listeners.delete(res); }); return; }
-        if (parts[2] === "send" && req.method === "POST") { const data = await body(); if (typeof data.text !== "string") throw bad(400, "invalid_body", "Invalid message"); session.bot.status = "busy"; session.handle.send(session.adapter.prompt(data.text, { providerSessionId: session.providerSessionId })); return done(); }
+        if (parts[2] === "send" && req.method === "POST") { const data = await body(); if (typeof data.text !== "string") throw bad(400, "invalid_body", "Invalid message"); if (!session.host.connected || !session.handle || session.handle.state === "exited") throw bad(409, "session_ended", "Session is not running"); try { session.handle.send(session.adapter.prompt(data.text, { providerSessionId: session.providerSessionId })); } catch { throw bad(409, "session_ended", "Session is not running"); } session.bot.status = "busy"; return done(); }
         if (parts[2] === "cancel" && req.method === "POST") { const messages = session.adapter.cancel({ providerSessionId: session.providerSessionId }); await session.handle.cancel(messages[0]); for (const message of messages.slice(1)) session.handle.send(message); return done(); }
       }
       if (parts[0] === "permissions" && parts.length === 2 && req.method === "POST") { const permission = permissions.get(parts[1]); if (!permission) throw bad(404, "not_found", "Permission not found"); const data = await body(); if (typeof data.allow !== "boolean") throw bad(400, "invalid_body", "Invalid permission answer"); const message = permission.session.adapter.answerPermission(permission.providerId, data.allow); if (message !== null) permission.session.handle.send(message); permissions.delete(parts[1]); return done(); }

@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, chmod, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, chmod, rm, stat } from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
+import { request as httpRequest } from "node:http";
 import { startRelay } from "../relay.mjs";
 import { daemonCommand } from "../../botd/src/client.ts";
 
@@ -27,7 +28,7 @@ test("relay bridges a real daemon, replays redacted events and logs frames", asy
     assert.deepEqual(await (await fetch(base + "/api/hosts")).json(), [{ alias: "test" }]);
     assert.equal((await post("/api/hosts", { alias: "second", label: "Second" })).status, 200);
     assert.equal((await post("/api/hosts", { alias: "test" })).status, 409);
-    assert.equal((await fetch(base + "/api/hosts", { method: "POST", body: "{" })).status, 400);
+    assert.equal((await fetch(base + "/api/hosts", { method: "POST", body: "{", headers: { "content-type": "application/json" } })).status, 400);
     assert.equal((await post("/api/sessions/missing/send", { text: "x" })).status, 404);
     assert.equal((await post("/api/hosts/test/connect")).status, 204);
     const opened = await post("/api/hosts/test/sessions", { kind: "codex", cwd: process.cwd() });
@@ -43,6 +44,31 @@ test("relay bridges a real daemon, replays redacted events and logs frames", asy
     const replay = await fetch(base + `/api/sessions/${sessionId}/events`, { headers: { "Last-Event-ID": String(id - 1) }, signal: replayAbort.signal });
     const replayData = new TextDecoder().decode((await replay.body!.getReader().read()).value);
     assert.match(replayData, new RegExp(`id: ${id}\\n`)); replayAbort.abort();
+    // Two further turns give >= 2 events; Last-Event-ID must filter the earlier ones.
+    assert.equal((await post(`/api/sessions/${sessionId}/send`, { text: "again" })).status, 204);
+    const readIds = async (headers: Record<string, string>, want: number) => {
+      const ac = new AbortController(); const res = await fetch(base + `/api/sessions/${sessionId}/events`, { headers, signal: ac.signal });
+      const rd = res.body!.getReader(); const dec = new TextDecoder(); let text = ""; let ids: number[] = [];
+      await waitFor(async () => { const part = await rd.read(); text += dec.decode(part.value); ids = [...text.matchAll(/^id: (\d+)$/gm)].map(m => Number(m[1])); return ids.length >= want; });
+      ac.abort(); return ids;
+    };
+    const all = await readIds({}, 2); const first = all[0];
+    assert.ok(all.length >= 2);
+    const later = await readIds({ "Last-Event-ID": String(first) }, all.length - 1);
+    assert.ok(!later.includes(first)); assert.deepEqual(later.slice(0, all.length - 1), all.slice(1));
+    // Guard: foreign Host/Origin and non-JSON POST are rejected; same-origin works.
+    const raw = (path: string, init: { method?: string; headers: Record<string, string>; body?: string }) => new Promise<number>((ok, fail) => {
+      const u = new URL(base + path);
+      const r = httpRequest({ host: "127.0.0.1", port: u.port, path, method: init.method ?? "GET", headers: init.headers }, res => { res.resume(); ok(res.statusCode!); });
+      r.on("error", fail); r.end(init.body);
+    });
+    assert.equal(await raw("/api/hosts", { headers: { host: "evil.example" } }), 403);
+    assert.equal(await raw("/api/hosts", { headers: { host: `127.0.0.1:${new URL(base).port}`, origin: "http://evil.example" } }), 403);
+    assert.equal((await fetch(base + "/api/hosts", { method: "POST", headers: { "content-type": "text/plain" }, body: JSON.stringify({ alias: "evil" }) })).status, 403);
+    assert.equal((await fetch(base + "/api/hosts", { headers: { origin: base } })).status, 200);
+    assert.equal((await fetch(base + "/api/hosts", { headers: { origin: `http://localhost:${new URL(base).port}` } })).status, 200);
+    assert.equal((await post("/api/hosts", { alias: "third" })).status, 200);
+    assert.equal((await stat(log)).mode & 0o777, 0o600);
     assert.equal((await post(`/api/sessions/${sessionId}/cancel`)).status, 204);
     const lines = (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     assert.ok(lines.some(line => line.dir === "c2s" && line.frame.op === "open" && line.kind === "codex"));
@@ -50,6 +76,7 @@ test("relay bridges a real daemon, replays redacted events and logs frames", asy
     assert.ok(lines.every(line => typeof line.ts === "number" && line.host === "test" && ["c2s", "s2c"].includes(line.dir) && "kind" in line && typeof line.frame === "object"));
     assert.doesNotMatch(JSON.stringify(lines), /sk-abcdefghijklmnopqrstuv/);
     assert.equal((await post("/api/hosts/test/disconnect")).status, 204);
+    assert.equal((await post(`/api/sessions/${sessionId}/send`, { text: "late" })).status, 409);
   } finally {
     relay.server.closeAllConnections(); await new Promise<void>(resolveClose => relay.server.close(() => resolveClose()));
     process.env.PATH = oldPath; await rm(dir, { recursive: true, force: true });
