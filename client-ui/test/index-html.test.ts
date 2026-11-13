@@ -5,19 +5,19 @@
 // and the viewport, carries the elements the sources look up by id and asks
 // the dev server for the stylesheet and for the modules.
 //
-// Nothing here starts a server, opens a socket or reaches the network: the
-// page, the sources and the server are read from the disk and checked
-// against each other. The dev server is not started on purpose, so the
-// paths of the page are checked against the mapping of client-ui/serve.mjs,
-// which is mirrored in servedFile() below. The test "the dev server still
-// serves the paths of the page" keeps that mirror honest.
+// The page, the sources and the stylesheet are read from the disk. The paths
+// the page asks for are requested from the real dev server of
+// client-ui/serve.mjs (started on a local port, no network beyond loopback),
+// so a route of the server cannot drift from what the page needs.
 //
 // Every name below is synthetic.
 
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
+
+import { startServer } from "../serve.mjs";
 
 const panelDir = path.resolve(import.meta.dirname, "..");
 const pagePath = path.join(panelDir, "index.html");
@@ -44,6 +44,9 @@ const LOOKED_UP = /getElementById\(\s*(["'`])([^"'`]+)\1\s*\)/g;
 
 /** The module the page imports. */
 const IMPORT = /(?:^|[\s;])(?:import|export)\s[^;]*?from\s*["']([^"']+)["']/g;
+
+/** A side-effect import: `import "/src/boot.js";`. */
+const SIDE_EFFECT_IMPORT = /(?:^|[\s;])import\s*["']([^"']+)["']/g;
 
 /** A module the page imports at run time. */
 const DYNAMIC_IMPORT = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
@@ -92,36 +95,15 @@ function links(): PageElement[] {
   return elements.filter((element) => element.name === "link");
 }
 
-/**
- * The file of the panel a path of the dev server answers with.
- *
- * This is the mapping of client-ui/serve.mjs: the page is served under "/"
- * and "/index.html", the stylesheet under "/styles.css" and the modules of
- * client-ui/src under "/src/<name>.js" (the sources are TypeScript, the
- * browser asks for the JavaScript name).
- */
-function servedFile(urlPath: string): string | null {
-  if (urlPath === "/" || urlPath === "/index.html") return path.join(panelDir, "index.html");
-  if (urlPath === "/styles.css") return path.join(panelDir, "styles.css");
-  const module = /^\/src\/([A-Za-z0-9_-]+)\.js$/.exec(urlPath);
-  if (module) return path.join(panelDir, "src", `${module[1]}.ts`);
-  return null;
-}
+/** The dev server the page is served by, started once for the suite. */
+const running = await startServer({ port: 0 });
+after(() => new Promise<void>((resolve) => running.server.close(() => resolve())));
 
-/**
- * The file of the panel a reference of the page points at.
- *
- * Returns null when the reference leaves the panel: an absolute URL or a
- * path that climbs out of the panel is not a file of the panel.
- */
-function referencedFile(reference: string): string | null {
-  const target = reference.split("#")[0].split("?")[0];
-  if (target === "") return null;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) return null;
-  if (target.startsWith("//")) return null;
-  // The page is served at "/", so a relative reference is a request for "/<reference>"; only the
-  // routes of serve.mjs answer it, a file that merely exists in the panel directory would 404.
-  return servedFile(new URL(target, "http://panel.test/").pathname);
+/** Requests a reference of the page exactly as a browser at the page URL would resolve it. */
+async function request(reference: string): Promise<{ response: Response; sameOrigin: boolean }> {
+  const url = new URL(reference, running.url);
+  const sameOrigin = url.origin === new URL(running.url).origin;
+  return { response: sameOrigin ? await fetch(url) : new Response(null, { status: 0 }), sameOrigin };
 }
 
 /** The ids the page carries. */
@@ -173,7 +155,7 @@ test("the page has a title", () => {
   assert.notEqual(titles[0].text.trim(), "", "the title names the page");
 });
 
-test("every script and every link of the page is a file of the panel", () => {
+test("every script and every link of the page is served by the dev server", async () => {
   const references: Array<{ kind: string; reference: string }> = [];
   for (const script of scripts()) {
     const src = script.attributes.get("src");
@@ -185,30 +167,35 @@ test("every script and every link of the page is a file of the panel", () => {
   }
   assert.ok(references.length > 0, "the page asks for a stylesheet or for a script");
   for (const { kind, reference } of references) {
-    const file = referencedFile(reference);
-    assert.ok(file, `the ${kind} ${reference} is a file of the panel`);
-    assert.ok(
-      existsSync(file),
-      `the ${kind} ${reference} points at ${path.relative(panelDir, file)}, which is not there`,
-    );
+    const { response, sameOrigin } = await request(reference);
+    assert.ok(sameOrigin, `the ${kind} ${reference} is served by the panel`);
+    assert.equal(response.status, 200, `the dev server does not serve the ${kind} ${reference}`);
+    await response.arrayBuffer();
   }
 });
 
-test("the imports of the page are modules of the panel", () => {
+test("the imports of the page are modules the dev server serves", async () => {
   const imports: string[] = [];
   for (const script of scripts()) {
     for (const match of script.text.matchAll(IMPORT)) imports.push(match[1]);
+    for (const match of script.text.matchAll(SIDE_EFFECT_IMPORT)) imports.push(match[1]);
     for (const match of script.text.matchAll(DYNAMIC_IMPORT)) imports.push(match[1]);
   }
   assert.ok(imports.length > 0, "the page boots a module");
   for (const reference of imports) {
-    const file = referencedFile(reference);
-    assert.ok(file, `the import ${reference} is a module of the panel`);
-    assert.ok(
-      existsSync(file),
-      `the import ${reference} points at ${path.relative(panelDir, file)}, which is not there`,
-    );
+    const { response, sameOrigin } = await request(reference);
+    assert.ok(sameOrigin, `the import ${reference} is a module of the panel`);
+    assert.equal(response.status, 200, `the dev server does not serve the import ${reference}`);
+    assert.match(response.headers.get("content-type") ?? "", /javascript/, `the import ${reference} is not served as JavaScript`);
+    await response.arrayBuffer();
   }
+});
+
+test("the import patterns see every form of import", () => {
+  const snippet = 'import { a } from "/src/a.js"; import "/src/side.js"; await import("/src/late.js");';
+  assert.deepEqual([...snippet.matchAll(IMPORT)].map((m) => m[1]), ["/src/a.js"]);
+  assert.deepEqual([...snippet.matchAll(SIDE_EFFECT_IMPORT)].map((m) => m[1]), ["/src/side.js"]);
+  assert.deepEqual([...snippet.matchAll(DYNAMIC_IMPORT)].map((m) => m[1]), ["/src/late.js"]);
 });
 
 test("every element the sources look up by id is in the page", () => {
@@ -236,11 +223,24 @@ test("the ids of the page are unique", () => {
   assert.deepEqual(duplicates, [], "no id of the page is used twice");
 });
 
-test("the dev server still serves the paths the page asks for", () => {
-  const server = readFileSync(path.join(panelDir, "serve.mjs"), "utf8");
-  assert.ok(server.includes('"/styles.css"'), "the server serves the stylesheet of the page");
-  assert.ok(
-    server.includes("/^\\/src\\/([A-Za-z0-9_-]+)\\.js$/"),
-    "the server serves the modules of the panel",
-  );
+test("the dev server maps the routes of the page to the right files and nothing else", async () => {
+  const body = async (route: string) => {
+    const { response } = await request(route);
+    return { status: response.status, type: response.headers.get("content-type") ?? "", text: await response.text() };
+  };
+  const index = await body("/");
+  assert.equal(index.status, 200);
+  assert.match(index.type, /html/);
+  assert.equal(index.text, page);
+  const styles = await body("/styles.css");
+  assert.equal(styles.status, 200);
+  assert.match(styles.type, /css/);
+  assert.equal(styles.text, readFileSync(path.join(panelDir, "styles.css"), "utf8"));
+  const module = await body("/src/panel.js");
+  assert.equal(module.status, 200);
+  assert.match(module.type, /javascript/);
+  // A file that exists in the panel directory but is not a route is a 404, as the page would get.
+  for (const route of ["/serve.mjs", "/README.md", "/src/panel.ts", "/test/index-html.test.ts", "/src/missing-module.js"]) {
+    assert.equal((await body(route)).status, 404, `${route} must not be served`);
+  }
 });
