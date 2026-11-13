@@ -13,6 +13,7 @@ import {
   reduce,
   selectBots,
   selectHostSessions,
+  selectPendingPermissions,
   selectSession,
 } from "./state.ts";
 import type { HostStatus, PendingPermission, UiAction, UiState } from "./state.ts";
@@ -252,6 +253,21 @@ export function createPanel(options: PanelOptions): Panel {
     const session = state.selectedSession ? selectSession(state, state.selectedSession) : null;
 
     const children: Array<Node> = [element("h2", { className: "panel-title", text: "Session" })];
+    const pending = selectPendingPermissions(state).filter((entry) => entry.sessionId !== state.selectedSession);
+    if (pending.length > 0) {
+      children.push(element("div", { className: "permission-alert", testId: "permission-alert" }, [
+        element("span", { className: "badge", text: `${pending.length} pending permission${pending.length === 1 ? "" : "s"}` }),
+        element("ul", { className: "permission-list" }, pending.map((entry) => {
+          const owner = selectSession(state, entry.sessionId);
+          return element("li", { className: "event event-permission" }, [
+            element("span", { text: `${owner?.host ?? ""} · ${owner?.botId ?? ""} · ${entry.sessionId}: ${entry.title}` }),
+            element("span", { className: "event-detail", text: entry.detail ?? "" }),
+            element("button", { className: "button button-small button-primary", text: "Allow", testId: `perm-allow-${entry.id}`, onClick: () => { void answerPermission(entry.id, true); } }),
+            element("button", { className: "button button-small button-danger", text: "Deny", testId: `perm-deny-${entry.id}`, onClick: () => { void answerPermission(entry.id, false); } }),
+          ]);
+        })),
+      ]));
+    }
     if (sessions.length > 0) {
       children.push(
         element(
@@ -261,7 +277,7 @@ export function createPanel(options: PanelOptions): Panel {
             element("li", {}, [
               element("button", {
                 className: entry.id === state.selectedSession ? "chip chip-active" : "chip",
-                text: entry.id,
+                text: `${entry.id} · ${entry.botId} · ${entry.status}`,
                 testId: `session-chip-${entry.id}`,
                 onClick: () => {
                   dispatch({ type: "session/selected", sessionId: entry.id });
