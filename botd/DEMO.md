@@ -5,6 +5,11 @@ Repo: `volto`
 Base: `origin/main`
 Owns: `botd/DEMO.md`
 
+> **Not yet executed against real hosts.** This runbook has not been run
+> against real remote hosts. Only offline checks, `--dry-run` and local
+> version checks have been performed, so every expected output below is
+> unverified until the demo is run on real hosts.
+
 The demo: the client runs on macOS. It opens one ssh connection per host. On
 `<host-a>` a `botd` daemon hosts **Claude Code**, on `<host-b>` a second daemon
 hosts **Codex**. The client speaks NDJSON frames to both daemons, runs a three
@@ -115,7 +120,7 @@ What lands on a host:
 Offline check of the installer, without a host:
 
 ```sh
-bash scripts/botd-selftest.sh      # → 52 checks, 0 failures
+bash scripts/botd-selftest.sh      # → 113 checks, 0 failures
 ```
 
 Verification on both hosts:
@@ -431,7 +436,7 @@ addresses only with `hostMask`.
 | # | check | command | expected |
 | --- | --- | --- | --- |
 | 1 | the daemon starts locally | `node --experimental-strip-types botd/src/main.ts version` | `0.1.0` |
-| 2 | the installer works offline | `bash scripts/botd-selftest.sh` | `52 checks, 0 failures` |
+| 2 | the installer works offline | `bash scripts/botd-selftest.sh` | `113 checks, 0 failures` |
 | 3 | botd is installed on `<host-a>` | `ssh '<host-a>' '~/.volto-botd/bin/botd version'` | `0.1.0` |
 | 4 | botd is installed on `<host-b>` | `ssh '<host-b>' '~/.volto-botd/bin/botd version'` | `0.1.0` |
 | 5 | the daemon answers over ssh | the `hello` frame of section 4.2 | `{"op":"hello",…}` |
