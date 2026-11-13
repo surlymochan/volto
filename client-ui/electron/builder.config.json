@@ -1,0 +1,27 @@
+{
+  "appId": "com.example.volto-client",
+  "productName": "Volto Client",
+  "extraMetadata": {
+    "main": "client-ui/electron/main.js"
+  },
+  "files": [
+    "client-ui/**",
+    "!client-ui/test/**",
+    "!client-ui/test-support/**",
+    "!client-ui/**/test/**",
+    "!client-ui/**/tests/**",
+    "!client-ui/**/*.test.*",
+    "!client-ui/**/*.spec.*"
+  ],
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["arm64"]
+      }
+    ],
+    "hardenedRuntime": true,
+    "identity": null,
+    "notarize": false
+  }
+}
