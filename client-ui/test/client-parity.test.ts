@@ -346,8 +346,8 @@ function allowedSteps(): string[] {
     .sort();
 }
 
-/** Calls a method of a client with the arguments the test needs. */
-function call(client: BotdClient, name: string): Promise<unknown> {
+/** Calls a method of a client with the arguments the test needs; returns what the method returned, as is. */
+function call(client: BotdClient, name: string): unknown {
   const argumentsOf: Record<string, unknown[]> = {
     listHosts: [],
     addHost: [{ alias: "beta" }],
@@ -358,7 +358,7 @@ function call(client: BotdClient, name: string): Promise<unknown> {
     answerPermission: ["permission-1", true],
   };
   const method = (client as unknown as Record<string, (...values: unknown[]) => unknown>)[name];
-  return Promise.resolve(method.apply(client, argumentsOf[name] ?? []));
+  return method.apply(client, argumentsOf[name] ?? []);
 }
 
 /* --------------------------------------------------------------- the harnesses */
@@ -837,7 +837,8 @@ test("the methods of the interface return promises on both clients", async () =>
     for (const member of promised) {
       for (const client of [mock, real]) {
         const answer = call(client, member.name);
-        assert.equal(typeof (answer as { then?: unknown }).then, "function", `${member.name} returns a promise`);
+        // The value the method really returned: a promise, not a thenable or a plain value.
+        assert.ok(answer instanceof Promise, `${member.name} returns a promise on the ${client === mock ? "mock" : "real"} client`);
         await answer.catch(() => {});
       }
     }
