@@ -43,6 +43,8 @@ interface PermissionOption {
 interface PermissionRequest {
   rpcId: JsonRpcId;
   options: PermissionOption[];
+  /** True once the turn of the request was cancelled: it may no longer be allowed. */
+  cancelled?: boolean;
 }
 
 export class DshAdapter implements BotAdapter {
@@ -100,6 +102,9 @@ export class DshAdapter implements BotAdapter {
   }
 
   cancel(ctx: { providerSessionId?: string }): unknown[] {
+    // A cancelled turn may no longer allow a pending permission: the request
+    // stays known, but from now on it can only be rejected.
+    for (const request of this.#permissions.values()) request.cancelled = true;
     const sessionId = ctx.providerSessionId ?? this.#sessionId;
     if (!sessionId) return [];
     // `session/cancel` is a JSON-RPC notification (no id).
@@ -116,6 +121,11 @@ export class DshAdapter implements BotAdapter {
     const request = this.#permissions.get(id);
     if (!request) return null;
     this.#permissions.delete(id);
+    if (request.cancelled && allow) {
+      // The turn of the request was cancelled: it may no longer be allowed,
+      // so nothing is written to the provider.
+      return null;
+    }
     const optionId = allow
       ? pickOption(request.options, ["allow_once", "allow_always"])
       : pickOption(request.options, ["reject_once", "reject_always"]);
