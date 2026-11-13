@@ -1,0 +1,249 @@
+# Installing botd on an executor host
+
+`scripts/install-botd.sh` installs the botd runtime on an executor host. It
+talks to that host over ssh and nowhere else: it never installs anything
+system wide, never runs `sudo` and never prints environment variables.
+
+This document is the reference of the installer — the command line, every
+option, what ends up on the host, and how to replace or remove it. The
+daemon itself is described in [RUNBOOK.md](RUNBOOK.md); the symptoms of a
+daemon that misbehaves are collected in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+`<ssh-alias>` is the name of the executor host in the ssh config of the
+operator. It is a placeholder in this document: no real host name, no
+address and no credential belongs here.
+
+## Prerequisites
+
+**Node 24 on the executor host.** Node 24 is the version volto targets: it
+is the version the installer brings when it has to bring its own, and the
+version a host should run.
+
+| node on the host | what the installer does |
+| --- | --- |
+| node 24 | installs as it is |
+| node 22.22 or newer | installs; the preflight line ends with "node 24 recommended" |
+| older than 22.18 | refuses the host: the typed sources of the daemon need the type stripping of node, and that needs node 22.18 |
+| no node at all | refuses the host, unless `--ensure-node` is given |
+
+With `--ensure-node` the installer puts a private node 24 into the prefix
+when the host has no node 24: the official tarball, its checksum verified
+against the published `SHASUMS256.txt`, unpacked into `<prefix>/node`. The
+host needs `curl` or `wget` and `sha256sum` or `shasum` for that.
+
+**The rest of the prerequisites:**
+
+* **ssh access** to `<ssh-alias>`: the alias has to resolve in the ssh
+  config of the operator, and the login shell of the host has to be able to
+  run the commands of the installer.
+* **bash** on the machine that runs the installer.
+* **rsync or tar**: the sources are copied with rsync when the host and the
+  local machine have it; otherwise they travel as a tar stream over ssh.
+  `tar` has to exist on both sides.
+* **a clone of this repository**: the installer copies the `botd/` directory
+  next to it, so it has to run from a checkout.
+
+No root is needed: nothing is installed system wide and sudo is never used.
+
+## The command line
+
+```sh
+bash scripts/install-botd.sh <ssh-alias> [--prefix <dir>] [--ensure-node] [--dry-run]
+```
+
+The installer prints one status line per step. It exits with 0 when the
+daemon answers on the host, with 1 when a step failed and with 2 when the
+command line was wrong.
+
+## Options
+
+These are the options of the installer; the usage text of
+`bash scripts/install-botd.sh --help` lists every one of them.
+
+| option | default | what it does |
+| --- | --- | --- |
+| `--prefix <dir>` | `~/.volto-botd` | the install root on the host. It has to be an absolute path or start with `~/`; `~` and `$HOME` are expanded on the host. |
+| `--ensure-node` | off | when the host has no node 24, install a private node 24 into `<prefix>/node`: the official tarball, its checksum verified against the published `SHASUMS256.txt`. Nothing is installed system wide, sudo is never used and the launcher prefers the private node. Hosts below node 22.18 and hosts without any node are supported with this flag. |
+| `--dry-run` | off | print the plan and exit without contacting the host. |
+
+The value of `--prefix` can also be given with an equals sign
+(`--prefix=<dir>`); both spellings are the same option.
+
+## Other arguments
+
+The parser accepts these as well; the usage text of the installer does not
+repeat them.
+
+| argument | default | what it does |
+| --- | --- | --- |
+| `<ssh-alias>` | none, it is required | the host to install on, as understood by ssh. It must not contain whitespace. |
+| `-h`, `--help` | — | print the usage and exit 0, without touching the host. |
+| `--` | — | end the options; the next argument is the `<ssh-alias>`. |
+
+## What is installed where
+
+With the default prefix the host ends up with this layout:
+
+| path on the host | what it is |
+| --- | --- |
+| `~/.volto-botd/app/` | the sources of the daemon: the whole `botd/` directory without `test/`, `node_modules/` and `.tmp/` |
+| `~/.volto-botd/app/src/main.ts` | the entry point the launcher runs |
+| `~/.volto-botd/bin/botd` | the launcher, a small shell script |
+| `~/.volto-botd/node/` | the private node 24 — only with `--ensure-node` and only when the host has no node 24 |
+| `~/.volto-botd/.node-tmp/` | the scratch directory of the download: the tarball and the checksum file stay there |
+| `~/.local/bin/botd` | a symlink to `~/.volto-botd/bin/botd`, so that the launcher is on the PATH of the host user |
+
+The launcher runs the typed sources of the daemon with the type stripping of
+node. It is written on the host, so the paths in it are the resolved ones;
+they are written with a `~` here for readability:
+
+```sh
+#!/bin/sh
+# botd launcher — generated by scripts/install-botd.sh, do not edit by hand.
+exec node --experimental-strip-types ~/.volto-botd/app/src/main.ts "$@"
+```
+
+With a private node the launcher prefers it and falls back to the node of
+the host:
+
+```sh
+if [ -x ~/.volto-botd/node/bin/node ]; then
+  exec ~/.volto-botd/node/bin/node --experimental-strip-types ~/.volto-botd/app/src/main.ts "$@"
+fi
+exec node --experimental-strip-types ~/.volto-botd/app/src/main.ts "$@"
+```
+
+Nothing else is touched: no system wide directory, no global setting, no
+environment variable of the host is read or written, and the installer never
+prints an environment variable.
+
+## The steps
+
+| step | what it does |
+| --- | --- |
+| 1 preflight | the host must run node 22.18 or newer; below node 24 the line ends with "node 24 recommended" |
+| 2 node | only with `--ensure-node` and only when the host has no node 24 |
+| 3 directories | create `<prefix>/app` and `<prefix>/bin` |
+| 4 sync | copy `botd/` (without `test/`, `node_modules/` and `.tmp/`) into `<prefix>/app` |
+| 5 wrapper | install the `<prefix>/bin/botd` launcher |
+| 6 link | symlink `~/.local/bin/botd` to `<prefix>/bin/botd` |
+| 7 verify | run the version command of the launcher on the host |
+
+The `node` step only exists when a private node is really installed, so a
+host that already runs node 24 keeps the six steps and the six status lines
+it always had. The status lines name the step and what happened, for
+example `[1/6] preflight: ok (node v24.3.0)` and
+`[6/6] verify: ok (0.1.0)`.
+
+## A dry run walkthrough
+
+`--dry-run` prints the plan and exits without contacting the host: no ssh,
+no rsync, no download.
+
+```sh
+bash scripts/install-botd.sh <ssh-alias> --dry-run
+```
+
+```text
+plan: install botd on <ssh-alias>
+  prefix: ~/.volto-botd
+  [1/6] preflight: check node >= 22.18 on <ssh-alias> (ssh)
+  [2/6] directories: create ~/.volto-botd/app and ~/.volto-botd/bin on <ssh-alias>
+  [3/6] sync: copy botd/ (excluding test/ and node_modules/) into ~/.volto-botd/app
+  [4/6] wrapper: install ~/.volto-botd/bin/botd
+  [5/6] link: symlink ~/.local/bin/botd -> ~/.volto-botd/bin/botd
+  [6/6] verify: run `botd --version` on <ssh-alias>
+```
+
+Read the plan as the list of the things that will happen on the host: the
+prefix, the directories that are created, the copy of the sources, the
+launcher, the symlink and the check that the launcher answers. The plan
+names the prefix as it was asked for; on the host the installer expands it
+to the home directory of the host user.
+
+With `--ensure-node` the plan has one step more: the private node becomes
+step 2 and the rest moves down.
+
+```sh
+bash scripts/install-botd.sh <ssh-alias> --ensure-node --dry-run
+```
+
+```text
+plan: install botd on <ssh-alias>
+  prefix: ~/.volto-botd
+  [1/7] preflight: check node >= 22.18 on <ssh-alias> (ssh)
+  [2/7] node: install a private node 24 into ~/.volto-botd/node when the host has no node 24 (official tarball, checksum verified)
+  [3/7] directories: create ~/.volto-botd/app and ~/.volto-botd/bin on <ssh-alias>
+  [4/7] sync: copy botd/ (excluding test/ and node_modules/) into ~/.volto-botd/app
+  [5/7] wrapper: install ~/.volto-botd/bin/botd
+  [6/7] link: symlink ~/.local/bin/botd -> ~/.volto-botd/bin/botd
+  [7/7] verify: run `botd --version` on <ssh-alias>
+```
+
+The same plan without `--dry-run` is the run: every line of the plan becomes
+a status line, and the last one proves that the launcher works on the host.
+
+## Upgrade
+
+Run the installer again with the same prefix. The sources are synced again,
+the launcher is rewritten and the symlink is replaced, so an upgrade is a
+second run of the same command:
+
+```sh
+bash scripts/install-botd.sh <ssh-alias>
+```
+
+With rsync the copy on the host matches the repository exactly: rsync
+deletes the files that are not in the source any more. The tar fallback
+overwrites the files it copies but keeps the ones that disappeared from the
+source. The launcher is written to a temporary file and moved into place, so
+a half written launcher is never executable. A run on a host that already
+runs node 24 changes nothing but the sources.
+
+Add `--ensure-node` when the host has no node 24: the private node 24 is
+installed into `<prefix>/node` and stays there for the following installs,
+and the launcher keeps preferring it.
+
+The metadata of the daemon survives an upgrade: the session table lives in
+the home of the daemon, which is `~/.volto-botd` by default (`BOTD_HOME`) —
+the same directory as the default prefix.
+
+## Uninstall
+
+The installer has no uninstall mode: it never deletes anything. The
+installation is removed by hand on the host.
+
+```sh
+ssh <ssh-alias> 'rm -f ~/.local/bin/botd'
+ssh <ssh-alias> 'rm -rf ~/.volto-botd'
+```
+
+The first command takes the launcher off the PATH, the second removes the
+prefix with the sources, the launcher, the private node and the scratch
+directory of the download. With the default prefix the home of the daemon
+goes with it: the session table and the event log of the daemon are inside
+the prefix. Copy the session table out first when the metadata of the
+sessions is still needed, or install the daemon with a different
+`--prefix` and point `BOTD_HOME` at a directory of its own.
+
+## Troubleshooting
+
+| what you see | what it means | what to do |
+| --- | --- | --- |
+| `node ... is older than 22.18` in the preflight step | the host runs a node that is too old for the typed sources | install node 24 on the host, or run the installer with `--ensure-node` |
+| `unsupported platform` in the node step | the private node is only available for linux-x64, linux-arm64 and darwin-arm64 | install node 24 on the host by hand |
+| `checksum mismatch` in the node step | the download of the tarball was damaged | run the installer again; every download is verified |
+| `botd --version failed` in the verify step | the launcher does not run on the host | run `botd --version` on the host by hand and check the node version and the sources in `<prefix>/app` |
+| the launcher is not found | the PATH of the host user does not hold `~/.local/bin` | add it to the PATH, or call `<prefix>/bin/botd` directly |
+
+The probes that show the state of a daemon, the protocol errors and the
+rest of the failures are collected in
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md); the flags and the environment
+variables of the daemon are in [RUNBOOK.md](RUNBOOK.md). The installer has
+an offline self test of its own, which emulates a host with a fake ssh and
+a fake rsync and contacts no host at all:
+
+```sh
+bash scripts/botd-selftest.sh
+```
