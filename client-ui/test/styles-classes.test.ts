@@ -60,6 +60,18 @@ test("panel and HTML classes have stylesheet rules or documented hooks", () => {
   assert.deepEqual(used.filter((name) => !hooks.has(name) && ![...selectors].some((selector) => matchesClass(name, selector))), []);
 });
 
+// Templated classes (`dot-${status}` etc.) cannot be checked by a wildcard: one surviving
+// variant would mask a removed one. Every variant that has its own rule must be asserted.
+test("every state variant of templated classes has its own stylesheet rule", () => {
+  const selectors = cssClasses(uncommentedCss);
+  const variants = [
+    "dot-connected", "dot-connecting", "dot-error",
+    "badge-idle", "badge-busy", "badge-down", "badge-running",
+    "event-tool-end", "event-tool-error",
+  ];
+  assert.deepEqual(variants.filter((name) => !selectors.has(name)), []);
+});
+
 test("stylesheet braces are balanced outside comments and strings", () => {
   const structural = uncommentedCss.replace(/(["'])(?:\\.|(?!\1)[^\\])*\1/g, "");
   let depth = 0;
@@ -106,10 +118,11 @@ test("data-testid values are unique in a rendered fixture", async () => {
   const { document } = installDom();
   // Register the real page's identified elements, including their static test IDs.
   for (const tag of html.matchAll(/<([a-z][\w-]*)\b([^>]*)>/gi)) {
-    const id = /\bid\s*=\s*["']([^"']+)["']/i.exec(tag[2])?.[1];
+    const testId = /\bdata-testid\s*=\s*["']([^"']+)["']/i.exec(tag[2])?.[1];
+    // Elements with only a data-testid still count toward uniqueness; give them a synthetic id.
+    const id = /\bid\s*=\s*["']([^"']+)["']/i.exec(tag[2])?.[1] ?? (testId ? `__static-${document.elements.size}` : undefined);
     if (!id) continue;
     const node = document.register(id, tag[1]);
-    const testId = /\bdata-testid\s*=\s*["']([^"']+)["']/i.exec(tag[2])?.[1];
     if (testId) node.setAttribute("data-testid", testId);
   }
   const panel = createPanel({ client: new MockBotdClient({ hosts: [{ alias: "alpha" }], stepMs: 5 }), pollMs: 0 });
