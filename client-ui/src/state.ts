@@ -34,6 +34,8 @@ export interface SessionState {
   id: string;
   /** Insertion index assigned when the session is first started. */
   order?: number;
+  /** Sequence of the most recently observed activity. */
+  activityOrder?: number;
   host: string;
   botId: string;
   status: SessionStatus;
@@ -102,12 +104,18 @@ export function selectSession(state: UiState, sessionId: string): SessionState |
   return state.sessions[sessionId] ?? null;
 }
 
-/** Sessions of one host, oldest first. */
+/** Sessions of one host, most recently active first. */
 export function selectHostSessions(state: UiState, alias: string | null): SessionState[] {
   if (alias === null) return [];
   return Object.values(state.sessions)
     .filter((session) => session.host === alias)
-    .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity));
+    .sort((a, b) => (b.activityOrder ?? b.order ?? -1) - (a.activityOrder ?? a.order ?? -1));
+}
+
+function nextActivityOrder(state: UiState): number {
+  return Object.values(state.sessions).reduce(
+    (max, session) => Math.max(max, session.activityOrder ?? session.order ?? -1), -1,
+  ) + 1;
 }
 
 /** Permission requests that still wait for an answer, across all sessions. */
@@ -186,6 +194,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
       const session: SessionState = {
         id: action.sessionId,
         order: Object.values(state.sessions).reduce((max, entry) => Math.max(max, entry.order ?? -1), -1) + 1,
+        activityOrder: nextActivityOrder(state),
         host: action.host,
         botId: action.botId,
         status: "running",
@@ -212,7 +221,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
         ...state,
         sessions: {
           ...state.sessions,
-          [session.id]: { ...session, status: "cancelled", pendingPermissions: [] },
+          [session.id]: { ...session, status: "cancelled", pendingPermissions: [], activityOrder: nextActivityOrder(state) },
         },
       };
     }
@@ -259,7 +268,7 @@ function applyEvent(state: UiState, event: BotEvent): UiState {
     ...state,
     sessions: {
       ...state.sessions,
-      [session.id]: { ...session, events, pendingPermissions, status },
+      [session.id]: { ...session, events, pendingPermissions, status, activityOrder: nextActivityOrder(state) },
     },
   };
 }
@@ -276,6 +285,7 @@ function answerPermission(state: UiState, permissionId: string): UiState {
     sessions[id] = {
       ...session,
       pendingPermissions: session.pendingPermissions.filter((permission) => permission.id !== permissionId),
+      activityOrder: nextActivityOrder(state),
     };
   }
   if (!changed) return state;
