@@ -1,0 +1,6 @@
+{
+  "name": "@surlymochan/botd-e2e-test",
+  "private": true,
+  "type": "module",
+  "main": "./aggregate.ts"
+}
