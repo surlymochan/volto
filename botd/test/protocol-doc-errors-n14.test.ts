@@ -10,8 +10,10 @@ const doc = readFileSync(new URL("../PROTOCOL.md", import.meta.url), "utf8");
 /** Literal code properties and named error-code unions, if present. */
 function errorCodes(source: string): string[] {
   const codes = new Set<string>();
-  for (const match of source.matchAll(/\bcode\s*:\s*["']([a-z][a-z0-9_]*)["']/g)) {
-    codes.add(match[1] as string);
+  // A code property may be a single literal or a union of literals: take every literal of it.
+  const literal = `["'][a-z][a-z0-9_]*["']`;
+  for (const property of source.matchAll(new RegExp(`\\bcode\\??\\s*:\\s*\\|?\\s*(${literal}(?:\\s*\\|\\s*${literal})*)`, "g"))) {
+    for (const match of (property[1] as string).matchAll(/["']([a-z][a-z0-9_]*)["']/g)) codes.add(match[1] as string);
   }
   for (const union of source.matchAll(/\b(?:export\s+)?type\s+\w*ErrorCode\s*=\s*([^;]+);/g)) {
     for (const match of (union[1] as string).matchAll(/["']([a-z][a-z0-9_]*)["']/g)) {
@@ -67,8 +69,15 @@ function frameTypes(source: string): string[] {
 
 test("extracts literal error codes from properties and named unions", () => {
   const source = `type ErrorCode = "sample_error" | 'other_error';
-    const frame = { code: "third_error" }; const text = "unrelated";`;
-  assert.deepEqual(new Set(errorCodes(source)), new Set(["sample_error", "other_error", "third_error"]));
+    const frame = { code: "third_error" }; const text = "unrelated";
+    interface Failure { code: "fourth_error" | "fifth_error"; detail?: string }
+    type Late = { code?:
+      | "sixth_error"
+      | "seventh_error" };`;
+  assert.deepEqual(
+    new Set(errorCodes(source)),
+    new Set(["sample_error", "other_error", "third_error", "fourth_error", "fifth_error", "sixth_error", "seventh_error"]),
+  );
 });
 
 test("error codes defined in the protocol modules appear in the document", () => {
