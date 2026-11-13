@@ -4,7 +4,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
-import { pathToFileURL } from "node:url";
 
 import { spawnTransport, sshArgs, sshTransport } from "../src/client.ts";
 
@@ -92,7 +91,7 @@ test("spawnTransport kill can be called twice", async () => {
 });
 
 test("spawnTransport handles a nonexistent command without an unhandled error", { todo: "the ChildProcess error event has no handler" }, () => {
-  const client = pathToFileURL(path.resolve("botd/src/client.ts")).href;
+  const client = new URL("../src/client.ts", import.meta.url).href;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e",
     `import { spawnTransport } from ${JSON.stringify(client)}; spawnTransport('.tmp/nonexistent-command', []);`,
   ], { encoding: "utf8" });
