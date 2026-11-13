@@ -37,12 +37,17 @@ type Run = {
   stderr: string;
 };
 
+/** The inherited environment without BOTD_* settings (BOTD_STORE_FILE etc. would override the throw away home). */
+function scrubbedEnv(): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("BOTD_")));
+}
+
 /** Run the entry point with a throw away home and collect everything it writes. */
 function runCli(args: string[], home: string): Promise<Run> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MAIN, ...args], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, BOTD_HOME: home, NODE_NO_WARNINGS: "1" },
+      env: { ...scrubbedEnv(), BOTD_HOME: home, NODE_NO_WARNINGS: "1" },
     });
     let stdout = "";
     let stderr = "";
