@@ -109,6 +109,11 @@ interface AllowEntry {
   reason: string;
   /** The members only one of the clients has, when the surface is about the shape. */
   extraMembers?: { mock: string[]; real: string[] };
+  /**
+   * What each client does on a step of the contract table, exactly. A step on
+   * the list may differ only in this way: any other difference is an accident.
+   */
+  outcomes?: { mock: Outcome; real: Outcome };
 }
 
 /**
@@ -136,6 +141,34 @@ const ALLOW_LIST: AllowEntry[] = [
     reason:
       "the mock has to show a running session without a daemon behind it. " +
       "The relay opens a session only when it is asked to, so the bots stay idle until then.",
+    outcomes: {
+      mock: {
+        kind: "resolved",
+        value: {
+          count: 3,
+          kinds: ["claude", "codex", "dsh"],
+          lanes: ["primary", "review", "sandbox"],
+          statuses: ["busy", "down", "idle"],
+          busy: 1,
+          withSession: 1,
+          withLease: 1,
+          quota: [16, 35, 58],
+        },
+      },
+      real: {
+        kind: "resolved",
+        value: {
+          count: 3,
+          kinds: ["claude", "codex", "dsh"],
+          lanes: ["primary", "review", "sandbox"],
+          statuses: ["idle", "idle", "idle"],
+          busy: 0,
+          withSession: 0,
+          withLease: 0,
+          quota: [12, 35, 58],
+        },
+      },
+    },
   },
   {
     surface: "send",
@@ -144,6 +177,7 @@ const ALLOW_LIST: AllowEntry[] = [
     reason:
       "the panel watches the sessions of the daemon and never prompts one. " +
       "The mock stands in for the panel, not for the demo that prompts a session.",
+    outcomes: { mock: { kind: "unsupported" }, real: { kind: "resolved" } },
   },
   {
     surface: "call after disconnect",
@@ -152,6 +186,34 @@ const ALLOW_LIST: AllowEntry[] = [
     reason:
       "the mock does not model a broken ssh connection: it keeps the bots of the host listed. " +
       "The relay marks them down, because the host is not connected any more.",
+    outcomes: {
+      mock: {
+        kind: "resolved",
+        value: {
+          count: 3,
+          kinds: ["claude", "codex", "dsh"],
+          lanes: ["primary", "review", "sandbox"],
+          statuses: ["down", "idle", "idle"],
+          busy: 0,
+          withSession: 0,
+          withLease: 0,
+          quota: [16, 35, 58],
+        },
+      },
+      real: {
+        kind: "resolved",
+        value: {
+          count: 3,
+          kinds: ["claude", "codex", "dsh"],
+          lanes: ["primary", "review", "sandbox"],
+          statuses: ["down", "down", "down"],
+          busy: 0,
+          withSession: 0,
+          withLease: 0,
+          quota: [12, 35, 58],
+        },
+      },
+    },
   },
   {
     surface: "list bots of an unknown host",
@@ -160,6 +222,13 @@ const ALLOW_LIST: AllowEntry[] = [
     reason:
       "the mock looks the bots of a host up in a map and answers with an empty list when it does not know the host. " +
       "The relay refuses the host. The panel only asks for the bots of a host the daemon named.",
+    outcomes: {
+      mock: {
+        kind: "resolved",
+        value: { count: 0, kinds: [], lanes: [], statuses: [], busy: 0, withSession: 0, withLease: 0, quota: [] },
+      },
+      real: { kind: "rejected" },
+    },
   },
 ];
 
@@ -440,9 +509,9 @@ class FakeRelay {
 
   /** Starts the relay and returns its base url. */
   async start(): Promise<string> {
-    await new Promise<void>((ready) => this.server.listen(0, "127.0.0.1", ready));
+    await new Promise<void>((ready) => this.server.listen(0, "localhost", ready));
     const address = this.server.address() as AddressInfo;
-    this.base = `http://127.0.0.1:${address.port}`;
+    this.base = `http://localhost:${address.port}`;
     return this.base;
   }
 
@@ -867,7 +936,10 @@ test("the event names of both clients are the same set", async () => {
 test("the contract table behaves alike on both clients", async () => {
   const mock = await runSteps(mockHarness());
   const real = await withRelay((relay) => runSteps(realHarness(relay)));
-  const allowed = new Set(ALLOW_LIST.map((entry) => entry.surface));
+
+  // Both clients refuse a host the daemon does not know: a client that accepts it fails the run.
+  assert.deepEqual(mock.get("connect an unknown host"), { kind: "rejected" }, "the mock refuses an unknown host");
+  assert.deepEqual(real.get("connect an unknown host"), { kind: "rejected" }, "the real client refuses an unknown host");
 
   const unexpected: string[] = [];
   const intended: string[] = [];
@@ -875,12 +947,15 @@ test("the contract table behaves alike on both clients", async () => {
     const left = mock.get(step.surface);
     const right = real.get(step.surface);
     if (isDeepStrictEqual(left, right)) continue;
-    if (allowed.has(step.surface)) {
+    const entry = ALLOW_LIST.find((candidate) => candidate.surface === step.surface);
+    // A step of the list may differ only the way its entry says: exactly.
+    if (entry?.outcomes && isDeepStrictEqual(left, entry.outcomes.mock) && isDeepStrictEqual(right, entry.outcomes.real)) {
       intended.push(step.surface);
       continue;
     }
     unexpected.push(
-      `${step.surface}: the mock answers ${JSON.stringify(left)}, the real client ${JSON.stringify(right)}`,
+      `${step.surface}: the mock answers ${JSON.stringify(left)}, the real client ${JSON.stringify(right)}` +
+        (entry ? " (not the difference the allow list describes)" : ""),
     );
   }
   assert.deepEqual(unexpected, [], "the clients differ in a step that is not in the allow list");
@@ -898,6 +973,9 @@ test("the allow list is up to date", async () => {
     assert.ok(entry.mock.trim().length > 0, `the allow list entry for ${entry.surface} does not say what the mock does`);
     assert.ok(entry.real.trim().length > 0, `the allow list entry for ${entry.surface} does not say what the real client does`);
     assert.ok(known.has(entry.surface), `the allow list names an unknown surface ${entry.surface}`);
+    if (STEPS.some((step) => step.surface === entry.surface)) {
+      assert.ok(entry.outcomes, `the allow list entry for ${entry.surface} does not say exactly what each client does`);
+    }
   }
 
   const mock = await runSteps(mockHarness());
