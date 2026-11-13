@@ -119,10 +119,9 @@ function referencedFile(reference: string): string | null {
   if (target === "") return null;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(target)) return null;
   if (target.startsWith("//")) return null;
-  if (target.startsWith("/")) return servedFile(target);
-  const resolved = path.resolve(panelDir, target);
-  if (resolved !== panelDir && !resolved.startsWith(panelDir + path.sep)) return null;
-  return resolved;
+  // The page is served at "/", so a relative reference is a request for "/<reference>"; only the
+  // routes of serve.mjs answer it, a file that merely exists in the panel directory would 404.
+  return servedFile(new URL(target, "http://panel.test/").pathname);
 }
 
 /** The ids the page carries. */
