@@ -1,0 +1,10 @@
+{"t":"2026-01-01T00:00:00Z","host":"worker-a","bot":"claude","dir":"out","frame":{"v":1,"op":"handshake","seq":1,"ack":0}}
+{"t":"2026-01-01T00:00:01Z","host":"worker-a","bot":"claude","dir":"in","frame":{"v":1,"op":"ready","seq":1,"ack":1}}
+{"t":"2026-01-01T00:00:02Z","host":"worker-a","bot":"claude","dir":"out","frame":{"v":1,"op":"prompt","seq":2,"ack":1}}
+{"t":"2026-01-01T00:00:03Z","host":"worker-a","bot":"claude","dir":"in","frame":{"v":1,"op":"text","seq":8,"ack":2}}
+{"t":"2026-01-01T00:00:04Z","host":"worker-a","bot":"claude","dir":"in","frame":{"v":1,"op":"turn_end","seq":3,"ack":2}}
+{"t":"2026-01-01T00:00:05Z","host":"worker-b","bot":"codex","dir":"out","frame":{"v":1,"op":"handshake","seq":1,"ack":0}}
+{"t":"2026-01-01T00:00:06Z","host":"worker-b","bot":"codex","dir":"in","frame":{"v":1,"op":"ready","seq":1,"ack":1}}
+{"t":"2026-01-01T00:00:07Z","host":"worker-b","bot":"codex","dir":"out","frame":{"v":1,"op":"prompt","seq":2,"ack":1}}
+{"t":"2026-01-01T00:00:08Z","host":"worker-b","bot":"codex","dir":"in","frame":{"v":1,"op":"text","seq":2,"ack":2}}
+{"t":"2026-01-01T00:00:09Z","host":"worker-b","bot":"codex","dir":"in","frame":{"v":1,"op":"turn_end","seq":3,"ack":2}}
