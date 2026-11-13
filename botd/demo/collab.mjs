@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { respond } from './fake-bot.mjs';
 import { getAdapter } from '../src/adapters/index.ts';
 import { route } from '../src/router.ts';
+import { hostSpecs, maskHosts } from './hosts.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const demo = resolve(root, 'botd/demo');
@@ -15,8 +16,8 @@ const outIndex = process.argv.indexOf('--out');
 if (outIndex !== -1 && !process.argv[outIndex + 1]) throw new Error('--out requires a path');
 const out = outIndex === -1 ? resolve(demo, 'out', new Date().toISOString().replace(/[:.]/g, '-') + '-' + process.pid) : resolve(process.argv[outIndex + 1]);
 const aliases = fake ? ['REMOTE_A', 'REMOTE_B'] : [process.env.REMOTE_CLAUDE, process.env.REMOTE_CODEX];
-if (aliases.some(x => !x) || aliases[0] === aliases[1]) throw new Error('Set REMOTE_CLAUDE and REMOTE_CODEX to distinct SSH aliases');
-const mask = value => aliases.reduce((text, alias, i) => text.split(alias).join(['REMOTE_A', 'REMOTE_B'][i]), String(value));
+const hosts = hostSpecs(aliases);
+const mask = value => maskHosts(value, hosts);
 const log = resolve(out, 'transcript.ndjson');
 const started = Date.now();
 await mkdir(out, { recursive: true, mode: 0o700 });
@@ -63,7 +64,6 @@ async function fakeSession(kind, host) {
 }
 
 async function realSessions() {
-  const hosts = aliases.map((alias, i) => ({ alias, display: ['REMOTE_A', 'REMOTE_B'][i] }));
   relay = spawn(process.execPath, [resolve(root, 'client-ui/relay.mjs'), '--frame-log', log], { cwd: root, env: { ...process.env, BOTD_HOSTS: JSON.stringify(hosts) }, stdio: ['ignore', 'pipe', 'pipe'] });
   relay.stderr.resume();
   const lines = createInterface({ input: relay.stdout });
