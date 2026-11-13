@@ -32,6 +32,8 @@ export type SessionStatus = "running" | "ended" | "cancelled";
 /** One session and the events it produced. */
 export interface SessionState {
   id: string;
+  /** Insertion index assigned when the session is first started. */
+  order?: number;
   host: string;
   botId: string;
   status: SessionStatus;
@@ -105,7 +107,7 @@ export function selectHostSessions(state: UiState, alias: string | null): Sessio
   if (alias === null) return [];
   return Object.values(state.sessions)
     .filter((session) => session.host === alias)
-    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity));
 }
 
 /** Permission requests that still wait for an answer, across all sessions. */
@@ -183,6 +185,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
       if (state.sessions[action.sessionId]) return state;
       const session: SessionState = {
         id: action.sessionId,
+        order: Object.values(state.sessions).reduce((max, entry) => Math.max(max, entry.order ?? -1), -1) + 1,
         host: action.host,
         botId: action.botId,
         status: "running",

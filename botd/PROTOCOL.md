@@ -27,7 +27,7 @@ and `botd/src/ring.ts`. The reference client is `botd/src/client.ts`.
 
 | op | direction | fields | meaning |
 | --- | --- | --- | --- |
-| `hello` | client → daemon | `clientId`, `leaseTtlMs?` | take the lease |
+| `hello` | client → daemon | `clientId`, `leaseTtlMs?`, `v?` | take the lease |
 | `renew` | client → daemon | `leaseId`, `fence` | extend the lease |
 | `open` | client → daemon | `sid`, `bot`, `resume?` | start a session |
 | `send` | client → daemon | `sid`, `payload` | forward a message to the bot |
@@ -137,6 +137,7 @@ Every error is a frame with `op:"error"`, a `code` and a `message`.
 | --- | --- |
 | `bad_json` | the line is not valid JSON or it is too long |
 | `bad_frame` | the frame is not a valid client frame |
+| `version_unsupported` | the requested hello protocol version is unsupported |
 | `no_lease` | a frame arrived before `hello`, or a renewal without a lease |
 | `stale_fence` | the fence of the connection is not the current fence |
 | `stale_lease` | the lease id of a renewal is unknown |
@@ -153,10 +154,9 @@ Every error is a frame with `op:"error"`, a `code` and a `message`.
 
 * The daemon announces its version in the answer to `hello`: `botdVersion`
   is `BOTD_VERSION` of `botd/src/protocol.ts` (0.1.0 today).
-* There is no version field on the wire and no negotiation: the client reads
-  the version of the answer and decides. Fields and ops may be added inside
-  one version: an unknown client op is refused with `code:"bad_frame"`, an
-  unknown daemon op is ignored by the client (`botd/src/client.ts`).
+* `hello.v` is a positive integer, defaults to 1, and only version 1 is supported.
+  Other versions receive `version_unsupported` without taking the lease; the connection stays open.
+  Fields and ops may be added: unknown client ops receive `bad_frame`; the client ignores unknown daemon ops.
 
 ## 9. Examples
 
