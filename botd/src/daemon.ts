@@ -275,6 +275,10 @@ export class Botd {
   }
 
   private onHello(connection: ConnectionState, frame: Extract<ClientFrame, { op: "hello" }>): void {
+    if ((frame.v ?? 1) !== 1) {
+      this.emitTo(connection, { op: "error", code: "version_unsupported", message: `unsupported version ${frame.v}` });
+      return;
+    }
     const result = this.lease.hello(frame.clientId, frame.leaseTtlMs);
     if (!result.ok) {
       this.emitTo(connection, { op: "error", code: result.code, message: result.message });
