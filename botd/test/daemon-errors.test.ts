@@ -329,7 +329,7 @@ test("the daemon ignores the unknown fields of a frame", async (t) => {
   const { daemon, client } = startHarness();
   t.after(() => daemon.close());
 
-  client.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000, v: 99, future: { a: 1 } });
+  client.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000, v: 1, future: { a: 1 } });
   const hello = await client.waitFor((frame) => frame.op === "hello", { label: "the hello answer" });
   assert.equal(hello.op, "hello");
   assert.equal(client.frames.filter(isError).length, 0);
@@ -592,7 +592,6 @@ test("a frame before the hello is refused with no_lease and the connection stays
 // ---------------------------------------------------------------------------
 
 test("a handshake with an unsupported version is refused with version_unsupported and the session closes", async (t) => {
-  t.todo("the daemon has no version negotiation: it ignores the version of the client");
   const { daemon, client } = startHarness();
   t.after(() => daemon.close());
 
