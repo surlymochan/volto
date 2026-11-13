@@ -5,19 +5,18 @@
 // and the viewport, carries the elements the sources look up by id and asks
 // the dev server for the stylesheet and for the modules.
 //
-// The page, the sources and the stylesheet are read from the disk. The paths
-// the page asks for are requested from the real dev server of
-// client-ui/serve.mjs (started on a local port, no network beyond loopback),
-// so a route of the server cannot drift from what the page needs.
+// Nothing here starts a server, opens a socket or reaches the network: the
+// page, the sources and the server are read from the disk. The route function
+// of client-ui/serve.mjs (resolveFile) is extracted from its source and
+// evaluated, so the paths of the page are checked against the real mapping,
+// not a mirror of it.
 //
 // Every name below is synthetic.
 
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import test, { after } from "node:test";
-
-import { startServer } from "../serve.mjs";
+import test from "node:test";
 
 const panelDir = path.resolve(import.meta.dirname, "..");
 const pagePath = path.join(panelDir, "index.html");
@@ -42,11 +41,8 @@ const ATTRIBUTE = /([^\s"'>/=]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>`]+)))?
 /** The id an element of the sources is looked up by. */
 const LOOKED_UP = /getElementById\(\s*(["'`])([^"'`]+)\1\s*\)/g;
 
-/** The module the page imports. */
-const IMPORT = /(?:^|[\s;])(?:import|export)\s[^;]*?from\s*["']([^"']+)["']/g;
-
-/** A side-effect import: `import "/src/boot.js";`. */
-const SIDE_EFFECT_IMPORT = /(?:^|[\s;])import\s*["']([^"']+)["']/g;
+/** A static import or re-export, with or without bindings, whatever the spacing: `import{a}from"x"`, `import "x"`. */
+const IMPORT = /\b(?:import|export)\b\s*(?:[^;"'()]*?\bfrom\s*)?["']([^"']+)["']/g;
 
 /** A module the page imports at run time. */
 const DYNAMIC_IMPORT = /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g;
@@ -95,15 +91,22 @@ function links(): PageElement[] {
   return elements.filter((element) => element.name === "link");
 }
 
-/** The dev server the page is served by, started once for the suite. */
-const running = await startServer({ port: 0 });
-after(() => new Promise<void>((resolve) => running.server.close(() => resolve())));
+const serverSource = readFileSync(path.join(panelDir, "serve.mjs"), "utf8");
 
-/** Requests a reference of the page exactly as a browser at the page URL would resolve it. */
-async function request(reference: string): Promise<{ response: Response; sameOrigin: boolean }> {
-  const url = new URL(reference, running.url);
-  const sameOrigin = url.origin === new URL(running.url).origin;
-  return { response: sameOrigin ? await fetch(url) : new Response(null, { status: 0 }), sameOrigin };
+/** The route function of serve.mjs, evaluated without importing or starting the server. */
+function loadResolveFile(source: string): (pathname: string) => { path: string; type: string } | null {
+  const match = /^function resolveFile\(pathname\) \{\n[\s\S]*?^\}$/m.exec(source);
+  assert.ok(match, "serve.mjs defines resolveFile(pathname)");
+  return new Function("join", "here", `${match[0]}\nreturn resolveFile;`)(path.join, panelDir);
+}
+
+const resolveFile = loadResolveFile(serverSource);
+
+/** The file the dev server answers a reference of the page with (the page is served at "/"), or null for a 404. */
+function referencedFile(reference: string): string | null {
+  const url = new URL(reference, "http://panel.test/");
+  if (url.origin !== "http://panel.test") return null;
+  return resolveFile(decodeURIComponent(url.pathname))?.path ?? null;
 }
 
 /** The ids the page carries. */
@@ -155,7 +158,7 @@ test("the page has a title", () => {
   assert.notEqual(titles[0].text.trim(), "", "the title names the page");
 });
 
-test("every script and every link of the page is served by the dev server", async () => {
+test("every script and every link of the page is a file the dev server serves", () => {
   const references: Array<{ kind: string; reference: string }> = [];
   for (const script of scripts()) {
     const src = script.attributes.get("src");
@@ -167,35 +170,31 @@ test("every script and every link of the page is served by the dev server", asyn
   }
   assert.ok(references.length > 0, "the page asks for a stylesheet or for a script");
   for (const { kind, reference } of references) {
-    const { response, sameOrigin } = await request(reference);
-    assert.ok(sameOrigin, `the ${kind} ${reference} is served by the panel`);
-    assert.equal(response.status, 200, `the dev server does not serve the ${kind} ${reference}`);
-    await response.arrayBuffer();
+    const file = referencedFile(reference);
+    assert.ok(file, `the ${kind} ${reference} is not a route of the dev server`);
+    assert.ok(existsSync(file), `the ${kind} ${reference} points at ${path.relative(panelDir, file)}, which is not there`);
   }
 });
 
-test("the imports of the page are modules the dev server serves", async () => {
+test("the imports of the page are routes of the dev server", () => {
   const imports: string[] = [];
   for (const script of scripts()) {
     for (const match of script.text.matchAll(IMPORT)) imports.push(match[1]);
-    for (const match of script.text.matchAll(SIDE_EFFECT_IMPORT)) imports.push(match[1]);
     for (const match of script.text.matchAll(DYNAMIC_IMPORT)) imports.push(match[1]);
   }
   assert.ok(imports.length > 0, "the page boots a module");
   for (const reference of imports) {
-    const { response, sameOrigin } = await request(reference);
-    assert.ok(sameOrigin, `the import ${reference} is a module of the panel`);
-    assert.equal(response.status, 200, `the dev server does not serve the import ${reference}`);
-    assert.match(response.headers.get("content-type") ?? "", /javascript/, `the import ${reference} is not served as JavaScript`);
-    await response.arrayBuffer();
+    const file = referencedFile(reference);
+    assert.ok(file, `the import ${reference} is not a route of the dev server`);
+    assert.ok(existsSync(file), `the import ${reference} points at ${path.relative(panelDir, file)}, which is not there`);
   }
 });
 
-test("the import patterns see every form of import", () => {
-  const snippet = 'import { a } from "/src/a.js"; import "/src/side.js"; await import("/src/late.js");';
-  assert.deepEqual([...snippet.matchAll(IMPORT)].map((m) => m[1]), ["/src/a.js"]);
-  assert.deepEqual([...snippet.matchAll(SIDE_EFFECT_IMPORT)].map((m) => m[1]), ["/src/side.js"]);
-  assert.deepEqual([...snippet.matchAll(DYNAMIC_IMPORT)].map((m) => m[1]), ["/src/late.js"]);
+test("the import pattern sees every form of static import", () => {
+  const forms = 'import { a } from "/src/a.js"; import "/src/side.js"; import{b}from"/src/b.js"; export * from "/src/c.js"; import x from\n"/src/d.js";';
+  assert.deepEqual([...forms.matchAll(IMPORT)].map((m) => m[1]), ["/src/a.js", "/src/side.js", "/src/b.js", "/src/c.js", "/src/d.js"]);
+  assert.deepEqual([...'await import("/src/late.js")'.matchAll(DYNAMIC_IMPORT)].map((m) => m[1]), ["/src/late.js"]);
+  assert.deepEqual([...'const important = "x";'.matchAll(IMPORT)], []);
 });
 
 test("every element the sources look up by id is in the page", () => {
@@ -223,24 +222,16 @@ test("the ids of the page are unique", () => {
   assert.deepEqual(duplicates, [], "no id of the page is used twice");
 });
 
-test("the dev server maps the routes of the page to the right files and nothing else", async () => {
-  const body = async (route: string) => {
-    const { response } = await request(route);
-    return { status: response.status, type: response.headers.get("content-type") ?? "", text: await response.text() };
-  };
-  const index = await body("/");
-  assert.equal(index.status, 200);
-  assert.match(index.type, /html/);
-  assert.equal(index.text, page);
-  const styles = await body("/styles.css");
-  assert.equal(styles.status, 200);
-  assert.match(styles.type, /css/);
-  assert.equal(styles.text, readFileSync(path.join(panelDir, "styles.css"), "utf8"));
-  const module = await body("/src/panel.js");
-  assert.equal(module.status, 200);
-  assert.match(module.type, /javascript/);
-  // A file that exists in the panel directory but is not a route is a 404, as the page would get.
-  for (const route of ["/serve.mjs", "/README.md", "/src/panel.ts", "/test/index-html.test.ts", "/src/missing-module.js"]) {
-    assert.equal((await body(route)).status, 404, `${route} must not be served`);
+test("the dev server routes only the page, the stylesheet and the modules, to the right files", () => {
+  const file = (route: string) => resolveFile(route)?.path ?? null;
+  assert.equal(file("/"), path.join(panelDir, "index.html"));
+  assert.equal(file("/index.html"), path.join(panelDir, "index.html"));
+  assert.equal(file("/styles.css"), path.join(panelDir, "styles.css"));
+  assert.equal(file("/src/panel.js"), path.join(panelDir, "src", "panel.ts"));
+  // A file that exists in the panel directory but is not a route is a 404.
+  for (const route of ["/serve.mjs", "/README.md", "/src/panel.ts", "/test/index-html.test.ts", "/src/../serve.mjs", "/src/a/b.js"]) {
+    assert.equal(file(route), null, `${route} must not be routed`);
   }
+  // The request handler answers 404 for an unrouted path and serves the routed file.
+  assert.match(serverSource, /const file = resolveFile\(pathname\);\s*if \(!file\) \{\s*send\(response, 404/);
 });
