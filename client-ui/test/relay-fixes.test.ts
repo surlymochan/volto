@@ -69,8 +69,7 @@ async function send(ctx: Awaited<ReturnType<typeof setup>>, text: string) {
   assert.equal((await ctx.post(`/api/sessions/${ctx.sessionId}/send`, { text })).status, 204);
 }
 
-// todo: relay.mjs keeps the permission after the provider exits, the answer returns 204 instead of 404
-test("pending permission is removed when the provider exits", { todo: "relay.mjs keeps the permission after the provider exits, the answer returns 204 instead of 404" }, async () => {
+test("pending permission is removed when the provider exits", async () => {
   const ctx = await setup();
   try {
     await send(ctx, "exit"); const [permission] = await ctx.readEvents(1);
@@ -79,8 +78,7 @@ test("pending permission is removed when the provider exits", { todo: "relay.mjs
   } finally { await ctx.close(); }
 });
 
-// todo: relay.mjs keeps the permission after host disconnect, the answer returns 204 instead of 404
-test("pending permission is removed on host disconnect", { todo: "relay.mjs keeps the permission after host disconnect, the answer returns 204 instead of 404" }, async () => {
+test("pending permission is removed on host disconnect", async () => {
   const ctx = await setup();
   try {
     await send(ctx, "permission"); const [permission] = await ctx.readEvents(1);

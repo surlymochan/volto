@@ -69,7 +69,7 @@ export async function startRelay({ hosts = [], port = 0, frameLog = process.env.
     const client = new BotdClient({ transport: () => tap(host, host.command ? spawnTransport(host.command[0], host.command.slice(1)) : sshTransport(host.alias), frameLog, sessions) });
     host.client = client;
     client.on("connected", () => { host.connected = true; for (const bot of host.bots.values()) bot.status = bot.sessionId ? "busy" : "idle"; });
-    client.on("disconnected", () => { host.connected = false; for (const bot of host.bots.values()) bot.status = "down"; });
+    client.on("disconnected", () => { host.connected = false; for (const [id, permission] of permissions) if (permission.session.host === host) permissions.delete(id); for (const bot of host.bots.values()) bot.status = "down"; });
     client.on("event", ({ sid, payload }) => {
       const session = sessions.get(sid); if (!session) return;
       for (const event of session.adapter.parse(JSON.stringify(payload))) {
@@ -81,7 +81,7 @@ export async function startRelay({ hosts = [], port = 0, frameLog = process.env.
         else if (event.kind === "error") emit(session, { kind: "turn_end", status: "error" });
       }
     });
-    client.on("state", ({ sid, state }) => { const session = sessions.get(sid); if (session && state === "exited") { session.bot.sessionId = null; session.bot.status = host.connected ? "idle" : "down"; setTimeout(() => sessions.delete(sid), 60000).unref(); } });
+    client.on("state", ({ sid, state }) => { const session = sessions.get(sid); if (state === "exited") { for (const [id, permission] of permissions) if (permission.session.id === sid) permissions.delete(id); if (session) { session.bot.sessionId = null; session.bot.status = host.connected ? "idle" : "down"; setTimeout(() => sessions.delete(sid), 60000).unref(); } } });
     return client.start().catch(async error => { await client.stop(); if (host.client === client) host.client = null; throw error; });
   }
   const panel = await startServer({ port });
@@ -106,7 +106,7 @@ export async function startRelay({ hosts = [], port = 0, frameLog = process.env.
       if (parts[0] === "hosts" && parts.length === 3) {
         const host = hostFor(parts[1]);
         if (parts[2] === "connect" && req.method === "POST") { await connect(host); return done(); }
-        if (parts[2] === "disconnect" && req.method === "POST") { const client = host.client; host.client = null; host.connected = false; if (client) await client.stop(); for (const bot of host.bots.values()) { bot.status = "down"; bot.sessionId = null; } return done(); }
+        if (parts[2] === "disconnect" && req.method === "POST") { const client = host.client; host.client = null; host.connected = false; for (const [id, permission] of permissions) if (permission.session.host === host) permissions.delete(id); if (client) await client.stop(); for (const bot of host.bots.values()) { bot.status = "down"; bot.sessionId = null; } return done(); }
         if (parts[2] === "bots" && req.method === "GET") return json([...host.bots.values()]);
         if (parts[2] === "sessions" && req.method === "POST") {
           const data = await body(); const bot = host.bots.get(data.kind);
