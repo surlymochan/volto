@@ -36,7 +36,7 @@ export type ResumeSpec = {
 
 /** Frames sent by the client (the volto control plane) to botd. */
 export type ClientFrame =
-  | { op: "hello"; clientId: string; leaseTtlMs?: number }
+  | { op: "hello"; clientId: string; leaseTtlMs?: number; v?: number }
   | { op: "renew"; leaseId: string; fence: number }
   | { op: "open"; sid: string; bot: BotSpec; resume?: ResumeSpec }
   | { op: "send"; sid: string; payload: unknown }
@@ -109,6 +109,9 @@ export function parseClientFrame(raw: unknown): ParseResult {
       if (!isNonEmptyString(raw.clientId)) {
         return { ok: false, message: "hello requires a non-empty clientId" };
       }
+      if (raw.v !== undefined && (typeof raw.v !== "number" || !Number.isInteger(raw.v) || raw.v < 1)) {
+        return { ok: false, message: "hello.v must be a positive integer" };
+      }
       if (raw.leaseTtlMs !== undefined && !isFiniteNumber(raw.leaseTtlMs)) {
         return { ok: false, message: "hello.leaseTtlMs must be a number" };
       }
@@ -117,6 +120,7 @@ export function parseClientFrame(raw: unknown): ParseResult {
       }
       const frame: ClientFrame = { op: "hello", clientId: raw.clientId };
       if (raw.leaseTtlMs !== undefined) frame.leaseTtlMs = raw.leaseTtlMs;
+      if (raw.v !== undefined) frame.v = raw.v as number;
       return { ok: true, frame };
     }
     case "renew": {
