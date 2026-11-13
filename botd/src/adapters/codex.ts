@@ -241,6 +241,7 @@ export class CodexAdapter implements BotAdapter {
    * the thread id and the turn id, so nothing is sent when no turn is known.
    */
   cancel(ctx: { providerSessionId?: string }): unknown[] {
+    this.#pendingApprovals.clear();
     const threadId = ctx.providerSessionId ?? this.#lastSessionId;
     const turnId = threadId ? this.#turnByThread.get(threadId) : undefined;
     if (!threadId || !turnId) return [];
