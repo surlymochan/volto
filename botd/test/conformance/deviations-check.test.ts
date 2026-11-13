@@ -80,7 +80,7 @@ test("every documented deviation is referenced by a conformance test", () => {
   assert.deepEqual(missing, [], `unreferenced deviations: ${missing.map(({ id, title }) => `${id}: ${title}`).join(", ")}`);
 });
 
-test("D1: a second connection before hello receives stale_fence", async (t) => {
+test("D1: a second connection before hello receives no_lease", async (t) => {
   const daemon = harness(t);
   const first = new RawClient(daemon);
   const second = new RawClient(daemon);
@@ -88,7 +88,9 @@ test("D1: a second connection before hello receives stale_fence", async (t) => {
   await first.waitForOp("hello");
   second.send({ op: "ack", sid: "s1", seq: 1 });
   const frame = await second.waitForOp("error");
-  assert.equal(frame.code, "stale_fence");
+  // Fixed on main (N9, no_lease before hello): the pre-hello frame of a second
+  // connection is answered with no_lease as PROTOCOL.md §3 says, not stale_fence.
+  assert.equal(frame.code, "no_lease");
 });
 
 test("D2: hello has no envelope fields", async (t) => {
