@@ -75,6 +75,8 @@ interface PermissionRecord {
   /** Original JSON-RPC id, echoed back verbatim in the response. */
   rawId: unknown;
   options: AcpPermissionOption[];
+  /** True once the turn of the request was cancelled: it may no longer be allowed. */
+  cancelled?: boolean;
 }
 
 export interface AgyAdapterOptions {
@@ -229,6 +231,9 @@ export class AgyAdapter implements BotAdapter {
   }
 
   cancel(ctx: { providerSessionId?: string }): unknown[] {
+    // A cancelled turn may no longer allow a pending permission: the request
+    // stays known, but from now on it can only be rejected.
+    for (const record of this.#permissions.values()) record.cancelled = true;
     if (this.protocol !== "acp") return [];
     return [
       {
@@ -243,6 +248,12 @@ export class AgyAdapter implements BotAdapter {
     if (this.protocol !== "acp") return null;
     const record = this.#permissions.get(id);
     if (!record) return null;
+    if (record.cancelled) {
+      // The turn of the request was cancelled: it may no longer be allowed.
+      // A late deny is answered with the reject option of the request.
+      this.#permissions.delete(id);
+      if (allow) return null;
+    }
     const optionId = pickPermissionOption(record.options, allow);
     if (!optionId) return null;
     this.#permissions.delete(id);
