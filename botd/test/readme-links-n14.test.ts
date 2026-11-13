@@ -24,8 +24,9 @@ function commands(text: string): Command[] {
   const blocks = text.matchAll(/^\s*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)^\s*\1\s*$/gm);
   const found: Command[] = [];
   for (const block of blocks) {
+    // The working directory persists across the lines of one fenced block, like in a shell session.
+    let cwd = "";
     for (const line of block[2].split("\n")) {
-      let cwd = "";
       for (const step of line.replace(/\s+#.*$/, "").split("&&").map((part) => part.trim())) {
         const cd = /^cd\s+(\S+)$/.exec(step);
         if (cd) cwd = join(cwd, cd[1].replace(/^['"]|['"]$/g, ""));
@@ -40,6 +41,13 @@ test("extractors ignore fenced headings and non-command lines", () => {
   const sample = "# First\n```sh\n# Not a heading\nnode sample.mjs\necho ignored\n```\n";
   assert.deepEqual(headings(sample), ["first"]);
   assert.deepEqual(commands(sample), [{ cwd: "", command: "node sample.mjs" }]);
+});
+
+test("extractor keeps the directory of a cd line for later lines of the block only", () => {
+  assert.deepEqual(commands("```sh\ncd botd\nnpm test\n```\n```sh\nnpm start\n```\n"), [
+    { cwd: "botd", command: "npm test" },
+    { cwd: "", command: "npm start" },
+  ]);
 });
 
 test("extractor follows cd chains", () => {
