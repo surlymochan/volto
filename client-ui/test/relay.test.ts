@@ -7,6 +7,8 @@ import { request as httpRequest } from "node:http";
 import { startRelay } from "../relay.mjs";
 import { daemonCommand } from "../../botd/src/client.ts";
 
+const removeDir = (dir: string) => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+
 const waitFor = async (predicate: () => Promise<boolean>) => {
   const end = Date.now() + 10000;
   while (Date.now() < end) { if (await predicate()) return; await new Promise(r => setTimeout(r, 50)); }
@@ -78,7 +80,10 @@ test("relay bridges a real daemon, replays redacted events and logs frames", asy
     assert.equal((await post("/api/hosts/test/disconnect")).status, 204);
     assert.equal((await post(`/api/sessions/${sessionId}/send`, { text: "late" })).status, 409);
   } finally {
-    relay.server.closeAllConnections(); await new Promise<void>(resolveClose => relay.server.close(() => resolveClose()));
-    process.env.PATH = oldPath; await rm(dir, { recursive: true, force: true });
+    try {
+      relay.server.closeAllConnections(); await new Promise<void>(resolveClose => relay.server.close(() => resolveClose()));
+    } finally {
+      process.env.PATH = oldPath; await removeDir(dir);
+    }
   }
 });

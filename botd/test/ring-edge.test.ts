@@ -7,10 +7,6 @@
 // the wording of the protocol document is not asserted here
 // (protocol-doc.test.ts owns it).
 //
-// Known bugs (recorded as todos below, the sources are not touched):
-//   - a non-monotonic push can hide an event that is still buffered;
-//   - an event pushed after clear() below the evicted marker stays invisible.
-//
 // The payloads are synthetic and the tests do no I/O and use no timer.
 
 import test from "node:test";
@@ -381,12 +377,10 @@ test("the ring buffers the exotic payloads without throwing", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Known bugs of botd/src/ring.ts (the sources are not touched here).
+// Non-monotonic pushes and gaps.
 // ---------------------------------------------------------------------------
 
-test("a non-monotonic push does not hide an event that is still buffered", {
-  todo: "since() starts at evictedThrough + 1, so an event pushed below that marker is hidden",
-}, () => {
+test("a non-monotonic push does not hide an event that is still buffered", () => {
   const ring = new EventRing(2, 1 << 20);
   ring.push(5, "five");
   ring.push(6, "six");
@@ -399,12 +393,11 @@ test("a non-monotonic push does not hide an event that is still buffered", {
     ["six", "one"],
     "the event that is still buffered comes back",
   );
-  assert.equal(gap, null, "nothing was lost, there is no hole");
+  // The late push evicted event 5, so the requested range has a gap.
+  assert.deepEqual(gap, { fromSeq: 1, toSeq: 5 });
 });
 
-test("an event pushed after clear() below the evicted marker stays visible", {
-  todo: "since() starts at evictedThrough + 1, so an event below that marker is never returned",
-}, () => {
+test("an event pushed after clear() below the evicted marker stays visible", () => {
   const ring = new EventRing(10, 1 << 20);
   for (let seq = 1; seq <= 4; seq += 1) ring.push(seq, `line-${seq}`);
   ring.clear();
@@ -417,4 +410,32 @@ test("an event pushed after clear() below the evicted marker stays visible", {
     ["late"],
     "the event that was pushed comes back",
   );
+});
+
+
+test("duplicate sequences remain visible after an eviction", () => {
+  const ring = new EventRing(2, 1 << 20);
+  ring.push(5, "evicted");
+  ring.push(1, "first");
+  ring.push(1, "second");
+  assert.deepEqual(ring.since(1).events.map((event) => event.payload), ["first", "second"]);
+  assert.deepEqual(ring.since(1).gap, { fromSeq: 1, toSeq: 5 });
+});
+
+test("since above lastSeq returns no events or gap", () => {
+  const ring = new EventRing(1, 1 << 20);
+  ring.push(1, "first");
+  ring.push(2, "second");
+  assert.deepEqual(ring.since(3), { events: [], gap: null });
+});
+
+test("clear followed by a late push retains the gap", () => {
+  const ring = new EventRing(10, 1 << 20);
+  ring.push(2, "two");
+  ring.push(4, "four");
+  ring.clear();
+  ring.push(1, "late");
+  const { events, gap } = ring.since(1);
+  assert.deepEqual(events.map((event) => event.payload), ["late"]);
+  assert.deepEqual(gap, { fromSeq: 1, toSeq: 4 });
 });

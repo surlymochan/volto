@@ -301,7 +301,6 @@ test("the session list is empty when no session runs", async () => {
 
 test(
   "the session list is ordered oldest first",
-  { todo: "the list is sorted by id, so alpha-session-10 comes before alpha-session-2" },
   async () => {
     buildPage();
     const bots: RemoteBot[] = [];
