@@ -225,6 +225,51 @@ test("sessions of a host are listed, others are not", () => {
   assert.deepEqual(selectHostSessions(state, null), []);
 });
 
+test("sessions are listed in creation order, including numeric ids", () => {
+  let state = initialState();
+  const ids = Array.from({ length: 12 }, (_, index) => String(index + 1));
+  for (const id of ids) state = withSession(state, id);
+  assert.deepEqual(selectHostSessions(state, "alpha").map((session) => session.id), ids);
+});
+
+test("interleaved hosts retain their own session creation order", () => {
+  let state = initialState();
+  for (const [sessionId, sessionHost] of [["a2", "alpha"], ["b2", "bravo"], ["a1", "alpha"], ["b1", "bravo"]]) {
+    state = reduce(state, { type: "session/started", sessionId, host: sessionHost, botId: "bot" });
+  }
+  assert.deepEqual(selectHostSessions(state, "alpha").map((session) => session.id), ["a2", "a1"]);
+  assert.deepEqual(selectHostSessions(state, "bravo").map((session) => session.id), ["b2", "b1"]);
+});
+
+test("starting a session twice keeps its first position", () => {
+  let state = withSession(initialState(), "z");
+  state = withSession(state, "a");
+  state = withSession(state, "z");
+  assert.deepEqual(selectHostSessions(state, "alpha").map((session) => session.id), ["z", "a"]);
+});
+
+test("sessions of removed or other hosts are excluded from the selected host", () => {
+  let state = reduce(initialState(), { type: "hosts/loaded", hosts: [host("alpha"), host("bravo")] });
+  state = reduce(state, { type: "session/started", sessionId: "bravo-1", host: "bravo", botId: "bot" });
+  state = withSession(state, "alpha-1");
+  state = reduce(state, { type: "hosts/loaded", hosts: [host("alpha")] });
+  assert.deepEqual(selectHostSessions(state, "alpha").map((session) => session.id), ["alpha-1"]);
+});
+
+test("sessions with tied or unknown order retain their existing order", () => {
+  let state = withSession(initialState(), "z");
+  state = withSession(state, "a");
+  state = withSession(state, "y");
+  state = withSession(state, "b");
+  state = { ...state, sessions: {
+    z: { ...state.sessions.z, order: 0 },
+    a: { ...state.sessions.a, order: 0 },
+    y: { ...state.sessions.y, order: undefined },
+    b: { ...state.sessions.b, order: undefined },
+  } };
+  assert.deepEqual(selectHostSessions(state, "alpha").map((session) => session.id), ["z", "a", "y", "b"]);
+});
+
 test("the clock is only moved by a tick", () => {
   const state = reduce(initialState(), { type: "clock/tick", now: 1000 });
   assert.equal(state.now, 1000);

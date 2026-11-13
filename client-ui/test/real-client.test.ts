@@ -24,6 +24,8 @@ import { installDom } from "../test-support/dom.ts";
 import type { ByteStream } from "../src/real-client.ts";
 import type { BotEvent, BotKind, RemoteBot, RemoteHost } from "../src/client.ts";
 
+const removeDir = (dir: string) => rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+
 /* ------------------------------------------------------------- the fakes */
 
 /** One session of the fake relay. */
@@ -607,9 +609,12 @@ test("the client talks to the real relay", async () => {
       unsubscribe();
     }
   } finally {
-    relay.server.closeAllConnections();
-    await new Promise<void>((closed) => relay.server.close(() => closed()));
-    process.env.PATH = oldPath;
-    await rm(dir, { recursive: true, force: true });
+    try {
+      relay.server.closeAllConnections();
+      await new Promise<void>((closed) => relay.server.close(() => closed()));
+    } finally {
+      process.env.PATH = oldPath;
+      await removeDir(dir);
+    }
   }
 });
