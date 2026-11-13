@@ -761,6 +761,7 @@ export class BotdClient {
     };
     const hello = this.#helloPending;
     this.#helloPending = null;
+    if (hello && this.#connected) this.#armRenew();
     if (hello) hello.resolve();
   }
 
@@ -827,6 +828,14 @@ export class BotdClient {
       }
     }
     this.#events.emit("error", sid === undefined ? { code, message } : { code, message, sid });
+    if (code === "lease_expired" && sid === undefined && this.#connected && !this.#stopping && !this.#helloPending) {
+      this.#clearRenew();
+      void this.#hello().catch((err: Error) => {
+        if (!this.#stopping && this.#connected) {
+          this.#events.emit("error", { code: "handshake_failed", message: err.message });
+        }
+      });
+    }
   }
 
   #onGap(frame: Record<string, unknown>): void {
