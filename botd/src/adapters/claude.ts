@@ -99,6 +99,7 @@ export class ClaudeAdapter implements BotAdapter {
   private toolNames = new Map<string, string>();
   /** control request id -> request payload, so a permission answer can echo the input. */
   private pendingPermissions = new Map<string, Record<string, unknown>>();
+  private cancelledPermissions = new Set<string>();
 
   spawn(opts: OpenOptions): SpawnSpec {
     const command = [...BASE_COMMAND];
@@ -125,6 +126,9 @@ export class ClaudeAdapter implements BotAdapter {
 
   /** Cancel = provider-native "interrupt" control request on stdin. */
   cancel(_ctx: { providerSessionId?: string }): unknown[] {
+    // A cancelled turn may no longer allow a pending permission: it stays
+    // known, but from now on it can only be denied.
+    for (const id of this.pendingPermissions.keys()) this.cancelledPermissions.add(id);
     return [
       {
         type: "control_request",
@@ -137,6 +141,12 @@ export class ClaudeAdapter implements BotAdapter {
   /** Answer a permission prompt with a provider-native control response. */
   answerPermission(id: string, allow: boolean): unknown | null {
     const request = this.pendingPermissions.get(id);
+    // A late allow of a cancelled turn is never honored; a late deny still is.
+    if (this.cancelledPermissions.has(id)) {
+      this.cancelledPermissions.delete(id);
+      this.pendingPermissions.delete(id);
+      if (allow) return null;
+    }
     const input = request ? request.input : undefined;
     const response = allow
       ? { behavior: "allow", updatedInput: isRecord(input) ? input : {} }
@@ -291,11 +301,13 @@ export class ClaudeAdapter implements BotAdapter {
 
   /** Keep the pending-permission cache bounded for long-running daemons. */
   private rememberPermission(id: string, request: Record<string, unknown>): void {
+    this.cancelledPermissions.delete(id);
     this.pendingPermissions.set(id, request);
     while (this.pendingPermissions.size > MAX_PENDING_PERMISSIONS) {
       const oldest = this.pendingPermissions.keys().next();
       if (oldest.done) break;
       this.pendingPermissions.delete(oldest.value);
+      this.cancelledPermissions.delete(oldest.value);
     }
   }
 

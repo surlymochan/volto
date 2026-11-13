@@ -10,6 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { Botd } from "../src/daemon.ts";
+import { redact } from "../src/redact.ts";
 import {
   ANSWERING_CHILD,
   FAKE_CHILD,
@@ -91,7 +92,7 @@ test("reports a gap when the ring buffer overflows", async (t) => {
   assert.deepEqual(replayed.map((event) => event.seq), [4, 5]);
 });
 
-test("pauses the sessions when the lease expires and resumes them on renew", async (t) => {
+test("pauses the sessions when the lease expires and resumes them on hello", async (t) => {
   const { daemon, client } = startHarness({ leaseTtlMs: 600, watchdogIntervalMs: 50 });
   t.after(() => daemon.close());
 
@@ -112,8 +113,16 @@ test("pauses the sessions when the lease expires and resumes them on renew", asy
   // The child is still alive.
   assert.equal(daemon.sessionStatus("s1")?.live, true);
 
-  // A renew brings the session back to life.
+  // Round 2: a renew of an expired lease is refused (lease_expired); the
+  // client brings the session back to life with a new hello (same clientId
+  // keeps the lease id and the fence).
   client.send({ op: "renew", leaseId: hello.leaseId, fence: hello.fence });
+  await client.waitFor((frame) => frame.op === "error" && frame.code === "lease_expired", {
+    label: "the lease_expired error of the late renew",
+  });
+  const again = await client.hello("client-a", 600);
+  assert.equal(again.leaseId, hello.leaseId);
+  assert.equal(again.fence, hello.fence);
   await client.waitFor((frame) => frame.op === "state" && frame.sid === "s1" && frame.state === "running", {
     timeoutMs: 4000,
     label: "the running state after the renew",
@@ -154,12 +163,19 @@ test("terminates the children when the lease expires twice", async (t) => {
 });
 
 test("rejects the frames of a client that lost the fence", async (t) => {
-  const daemon = new Botd({ leaseTtlMs: 60_000, watchdogIntervalMs: 50 }, { onFrame: () => {} });
+  // Round 2: a second holder only takes over an expired lease (otherwise
+  // lease_conflict), so the test drives the clock of the daemon past the ttl.
+  const clock = { value: Date.now() };
+  const daemon = new Botd(
+    { leaseTtlMs: 60_000, watchdogIntervalMs: 50, now: () => clock.value },
+    { onFrame: () => {} },
+  );
   t.after(() => daemon.close());
   const first = new TestClient(daemon);
   const second = new TestClient(daemon);
 
   const helloA = await first.hello("client-a", 60_000);
+  clock.value += 60_000;
   const helloB = await second.hello("client-b", 60_000);
   assert.ok(helloB.fence > helloA.fence, "the fence of the new client has to be higher");
 
@@ -322,7 +338,9 @@ test("persists the session table and reads it back", async (t) => {
   assert.equal(parsed.sessions.length, 1);
   assert.equal(parsed.sessions[0].sid, "s1");
   assert.equal(parsed.sessions[0].kind, "acp");
-  assert.deepEqual(parsed.sessions[0].command, CHILD_COMMAND);
+  // The stored command is redacted at serialization time (a home path such as
+  // /home/runner/... is stored as /home/<user>/...), whatever the host path.
+  assert.deepEqual(parsed.sessions[0].command, redact(CHILD_COMMAND));
   assert.equal(parsed.sessions[0].state, "running");
 
   // The table is written atomically: no temporary file is left behind.

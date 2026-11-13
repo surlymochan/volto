@@ -329,7 +329,7 @@ test("the daemon ignores the unknown fields of a frame", async (t) => {
   const { daemon, client } = startHarness();
   t.after(() => daemon.close());
 
-  client.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000, v: 99, future: { a: 1 } });
+  client.send({ op: "hello", clientId: "client-a", leaseTtlMs: 60_000, v: 1, future: { a: 1 } });
   const hello = await client.waitFor((frame) => frame.op === "hello", { label: "the hello answer" });
   assert.equal(hello.op, "hello");
   assert.equal(client.frames.filter(isError).length, 0);
@@ -389,12 +389,18 @@ test("an unknown op does not disturb the frames that follow it", async (t) => {
 
 test("the frames of the client that lost the fence are refused with stale_epoch and the session stays open", async (t) => {
   const home = makeTempDir("daemon-errors-fence-");
-  const daemon = new Botd({ home, storeFile: `${home}/sessions.json` }, { onFrame: () => {} });
+  // Round 2: the takeover needs an expired lease (otherwise lease_conflict).
+  const clock = { value: Date.now() };
+  const daemon = new Botd(
+    { home, storeFile: `${home}/sessions.json`, now: () => clock.value },
+    { onFrame: () => {} },
+  );
   t.after(() => daemon.close());
   const first = new TestClient(daemon);
   const second = new TestClient(daemon);
 
   await first.hello("client-a", 60_000);
+  clock.value += 60_000;
   await second.hello("client-b", 60_000);
 
   const mark = first.mark();
@@ -586,7 +592,6 @@ test("a frame before the hello is refused with no_lease and the connection stays
 // ---------------------------------------------------------------------------
 
 test("a handshake with an unsupported version is refused with version_unsupported and the session closes", async (t) => {
-  t.todo("the daemon has no version negotiation: it ignores the version of the client");
   const { daemon, client } = startHarness();
   t.after(() => daemon.close());
 
