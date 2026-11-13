@@ -99,6 +99,7 @@ export class ClaudeAdapter implements BotAdapter {
   private toolNames = new Map<string, string>();
   /** control request id -> request payload, so a permission answer can echo the input. */
   private pendingPermissions = new Map<string, Record<string, unknown>>();
+  private cancelledPermissions = new Set<string>();
 
   spawn(opts: OpenOptions): SpawnSpec {
     const command = [...BASE_COMMAND];
@@ -125,6 +126,8 @@ export class ClaudeAdapter implements BotAdapter {
 
   /** Cancel = provider-native "interrupt" control request on stdin. */
   cancel(_ctx: { providerSessionId?: string }): unknown[] {
+    for (const id of this.pendingPermissions.keys()) this.cancelledPermissions.add(id);
+    this.pendingPermissions.clear();
     return [
       {
         type: "control_request",
@@ -137,6 +140,7 @@ export class ClaudeAdapter implements BotAdapter {
   /** Answer a permission prompt with a provider-native control response. */
   answerPermission(id: string, allow: boolean): unknown | null {
     const request = this.pendingPermissions.get(id);
+    if (this.cancelledPermissions.has(id)) return null;
     const input = request ? request.input : undefined;
     const response = allow
       ? { behavior: "allow", updatedInput: isRecord(input) ? input : {} }
@@ -291,6 +295,7 @@ export class ClaudeAdapter implements BotAdapter {
 
   /** Keep the pending-permission cache bounded for long-running daemons. */
   private rememberPermission(id: string, request: Record<string, unknown>): void {
+    this.cancelledPermissions.delete(id);
     this.pendingPermissions.set(id, request);
     while (this.pendingPermissions.size > MAX_PENDING_PERMISSIONS) {
       const oldest = this.pendingPermissions.keys().next();
