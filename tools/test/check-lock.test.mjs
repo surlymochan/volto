@@ -4,6 +4,10 @@
 //
 // The fixtures are synthetic: the package names below exist nowhere and no
 // hostname, address or credential appears in this file.
+//
+// The npm layer of the check (the `npm ci --dry-run` that proves a lockfile
+// installs) needs a registry, so it is switched off for this file. The layer
+// itself is covered by tools/test/check-lock-npm.test.mjs.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -25,6 +29,9 @@ import {
 const here = dirname(fileURLToPath(import.meta.url));
 const script = join(here, "..", "check-lock.mjs");
 const fixtures = join(here, "fixtures");
+
+// The npm layer talks to a registry: the unit tests stay offline.
+process.env.CHECK_LOCK_SKIP_NPM = "1";
 
 /**
  * Reads one of the synthetic lockfile fixtures.
@@ -59,9 +66,17 @@ const GOOD_TREE_LOCK = readFixture("good-lock.json");
 const BAD_MISSING_DEPENDENCY_LOCK = readFixture("bad-lock-missing-dependency.json");
 /** A lock tree that lost the entry of an optional platform package. */
 const BAD_MISSING_PLATFORM_LOCK = readFixture("bad-lock-missing-platform-package.json");
+/** A lock that resolves a version the manifest no longer accepts. */
+const BAD_VERSION_OUT_OF_RANGE_LOCK = readFixture("bad-lock-version-out-of-range.json");
+/** A lock that was written when the manifest asked for an older range. */
+const BAD_STALE_RANGE_LOCK = readFixture("bad-lock-stale-range.json");
+/** A lock that was written before the manifest gained a dependency. */
+const BAD_STALE_NEW_DEPENDENCY_LOCK = readFixture("bad-lock-stale-new-dependency.json");
 
-// Scratch space for the fixtures, inside the worktree.
-const scratch = join(here, ".tmp");
+// Scratch space for the fixtures, inside the worktree. Every test file has
+// its own directory: the suites run in parallel and must not delete the
+// scratch space of another one.
+const scratch = join(here, ".tmp", "lock");
 mkdirSync(scratch, { recursive: true });
 
 after(() => {
@@ -194,6 +209,40 @@ test("a locked version that no longer satisfies the range is reported", () => {
   assert.match(problems[0].message, /resolves "@example\/core@0\.9\.0" which does not satisfy "\^1\.2\.0"/);
 });
 
+test("a fixture with a version outside the declared range is reported", () => {
+  const problems = checkManifestAgainstLock(GOOD_MANIFEST, BAD_VERSION_OUT_OF_RANGE_LOCK);
+
+  assert.equal(problems.length, 1);
+  assert.match(problems[0].message, /resolves "@example\/core@0\.9\.0" which does not satisfy "\^1\.2\.0"/);
+});
+
+test("a lock written before the manifest changed its range is reported", () => {
+  const problems = checkManifestAgainstLock(GOOD_MANIFEST, BAD_STALE_RANGE_LOCK);
+
+  assert.equal(problems.length, 2);
+  assert.match(
+    problems[0].message,
+    /the lock root entry records "@example\/core@\^1\.0\.0" but package\.json declares "@example\/core@\^1\.2\.0"/,
+  );
+  assert.match(
+    problems[1].message,
+    /resolves "@example\/core@1\.0\.4" which does not satisfy "\^1\.2\.0"/,
+  );
+});
+
+test("a lock written before the manifest gained a dependency is reported", () => {
+  const manifest = structuredClone(GOOD_MANIFEST);
+  manifest.dependencies["@example/extra"] = "^3.0.0";
+
+  const problems = checkManifestAgainstLock(manifest, BAD_STALE_NEW_DEPENDENCY_LOCK);
+
+  assert.equal(problems.length, 1);
+  assert.match(
+    problems[0].message,
+    /dependencies "@example\/extra@\^3\.0\.0" is not listed in the lock root entry/,
+  );
+});
+
 test("a dependency the manifest dropped is reported", () => {
   const manifest = structuredClone(GOOD_MANIFEST);
   delete manifest.dependencies["@example/core"];
@@ -275,6 +324,21 @@ test("a repository with a stale lockfile fails and names the repair command", ()
     const run = spawnSync(process.execPath, [script, "--root", root], { encoding: "utf8" });
     assert.equal(run.status, 1);
     assert.match(run.stdout, /optionalDependencies "@example\/widget-linux-x64@1\.2\.0"/);
+    assert.match(run.stdout, /npm install --package-lock-only --include=optional/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a repository with a lock that predates the manifest fails", () => {
+  const root = writeTree([{ manifest: GOOD_MANIFEST, lock: BAD_STALE_RANGE_LOCK, name: "app" }]);
+  try {
+    const result = checkRepository(root);
+    assert.equal(result.problems.length, 2);
+
+    const run = spawnSync(process.execPath, [script, "--root", root], { encoding: "utf8" });
+    assert.equal(run.status, 1);
+    assert.match(run.stdout, /the lock root entry records "@example\/core@\^1\.0\.0"/);
     assert.match(run.stdout, /npm install --package-lock-only --include=optional/);
   } finally {
     rmSync(root, { recursive: true, force: true });

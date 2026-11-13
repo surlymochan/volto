@@ -37,8 +37,28 @@
 //
 //   run: npm install --package-lock-only --include=optional
 //
+// The comparison above only reads what the two files say. npm itself has the
+// final word, so a second layer runs
+//
+//   npm ci --dry-run --ignore-scripts --no-audit --no-fund
+//
+// in the directory of every pair. A non zero exit code fails the check and
+// npm's own message becomes part of the report. npm 11 prints "npm error",
+// npm 10 and older print "npm ERR!"; both spellings are recognised.
+//
+// The layer talks to the registry, so it is switched off with
+//
+//   CHECK_LOCK_SKIP_NPM=1
+//
+// The unit tests use that switch to stay offline; CI runs the layer.
+//
+// Note that `npm ci --dry-run` still removes the node_modules directory of
+// the checked project and leaves an empty one behind: run the check on a
+// fresh checkout, the way CI does.
+//
 // Node 24, no dependencies: only the standard library is used.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +71,20 @@ const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", "out", "co
 
 /** The command that brings a lockfile back in sync with its manifest. */
 export const REPAIR_COMMAND = "run: npm install --package-lock-only --include=optional";
+
+/** The arguments of the npm dry run that proves a lockfile installs. */
+export const NPM_CI_ARGS = ["ci", "--dry-run", "--ignore-scripts", "--no-audit", "--no-fund"];
+
+/** The npm dry run, as a command a human can copy. */
+export const NPM_CI_COMMAND = `npm ${NPM_CI_ARGS.join(" ")}`;
+
+/**
+ * The marker npm prints in front of every line of an error message.
+ *
+ * npm 11 and newer print "npm error", npm 10 and older print "npm ERR!".
+ * Both spellings have to be recognised.
+ */
+export const NPM_ERROR_PATTERN = /npm\s+(?:error|ERR!)/i;
 
 // --- semver ----------------------------------------------------------------
 //
@@ -655,6 +689,99 @@ export function checkManifestAgainstLock(manifest, lock) {
   return problems;
 }
 
+// --- the npm layer --------------------------------------------------------
+
+/**
+ * @typedef {{ status: number | null, output: string }} NpmResult
+ */
+
+/**
+ * Tells whether the npm layer is switched off.
+ *
+ * The unit tests set CHECK_LOCK_SKIP_NPM=1 so that they never touch a
+ * registry; CI runs the layer.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {boolean}
+ */
+export function npmLayerDisabled(env = process.env) {
+  const value = String(env.CHECK_LOCK_SKIP_NPM ?? "").trim().toLowerCase();
+  if (value === "") return false;
+  return value !== "0" && value !== "false" && value !== "no" && value !== "off";
+}
+
+/**
+ * Runs the npm dry run in a directory.
+ *
+ * @param {string} directory
+ * @returns {NpmResult}
+ */
+export function runNpmCi(directory) {
+  const command = process.platform === "win32" ? "npm.cmd" : "npm";
+  const run = spawnSync(command, NPM_CI_ARGS, {
+    cwd: directory,
+    encoding: "utf8",
+    env: { ...process.env, npm_config_update_notifier: "false" },
+  });
+
+  if (run.error) {
+    return {
+      status: null,
+      output: `cannot run ${NPM_CI_COMMAND}: ${run.error.message}`,
+    };
+  }
+
+  const stdout = typeof run.stdout === "string" ? run.stdout : "";
+  const stderr = typeof run.stderr === "string" ? run.stderr : "";
+  return { status: run.status, output: `${stdout}\n${stderr}`.trim() };
+}
+
+/**
+ * Extracts the error message npm printed.
+ *
+ * npm 11 and newer print "npm error ...", npm 10 and older print
+ * "npm ERR! ...". Both spellings are recognised; when neither is found the
+ * first lines of the output are used instead.
+ *
+ * @param {string} output
+ * @returns {string}
+ */
+export function extractNpmError(output) {
+  const text = typeof output === "string" ? output : "";
+  const marked = text
+    .split("\n")
+    .filter((line) => NPM_ERROR_PATTERN.test(line))
+    .map((line) => line.trim());
+
+  if (marked.length > 0) return marked.join("\n");
+
+  const plain = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return plain.slice(0, 5).join("\n");
+}
+
+/**
+ * Runs the npm dry run in a directory and reports what npm said.
+ *
+ * @param {string} directory
+ * @param {(directory: string) => NpmResult} [runner]
+ * @returns {Problem[]}
+ */
+export function checkNpmCi(directory, runner = runNpmCi) {
+  const result = runner(directory);
+  if (result.status === 0) return [];
+
+  const detail = extractNpmError(result.output);
+  const status =
+    result.status === null ? "no exit code" : `exit code ${result.status}`;
+  const message = detail
+    ? `${NPM_CI_COMMAND} failed with ${status}:\n${detail}`
+    : `${NPM_CI_COMMAND} failed with ${status}`;
+  return [{ message }];
+}
+
 /**
  * Lists every directory of a tree, skipping the ones that never hold a
  * package of their own.
@@ -715,10 +842,13 @@ function readJson(path) {
  * Checks every package.json that has a sibling package-lock.json.
  *
  * @param {string} root
- * @returns {{ root: string, pairs: { directory: string, manifestPath: string, lockPath: string }[], problems: (Problem & { label: string })[] }}
+ * @param {{ skipNpm?: boolean, runner?: (directory: string) => NpmResult }} [options]
+ * @returns {{ root: string, pairs: { directory: string, manifestPath: string, lockPath: string }[], problems: (Problem & { label: string })[], npmSkipped: boolean }}
  */
-export function checkRepository(root) {
+export function checkRepository(root, options = {}) {
   const pairs = findLockPairs(root);
+  const skipNpm = options.skipNpm ?? npmLayerDisabled();
+  const runner = options.runner ?? runNpmCi;
   /** @type {(Problem & { label: string })[]} */
   const problems = [];
 
@@ -749,27 +879,36 @@ export function checkRepository(root) {
     for (const problem of checkManifestAgainstLock(manifest, lock)) {
       problems.push({ label, ...problem });
     }
+
+    if (skipNpm) continue;
+
+    for (const problem of checkNpmCi(pair.directory, runner)) {
+      problems.push({ label, ...problem });
+    }
   }
 
-  return { root, pairs, problems };
+  return { root, pairs, problems, npmSkipped: skipNpm };
 }
 
 /**
  * Renders the result of a repository check.
  *
- * @param {{ pairs: unknown[], problems: (Problem & { label: string })[] }} result
+ * @param {{ pairs: unknown[], problems: (Problem & { label: string })[], npmSkipped?: boolean }} result
  * @returns {string}
  */
 export function formatReport(result) {
   const lines = [];
   const pairs = result.pairs.length;
+  const npmNote = result.npmSkipped ? " (npm ci dry run skipped)" : "";
 
   if (result.problems.length === 0) {
-    lines.push(`lock check: ok (${pairs} package.json / package-lock.json pair(s) checked)`);
+    lines.push(
+      `lock check: ok (${pairs} package.json / package-lock.json pair(s) checked${npmNote})`,
+    );
     return `${lines.join("\n")}\n`;
   }
 
-  lines.push(`lock check: ${result.problems.length} problem(s) in ${pairs} pair(s)`);
+  lines.push(`lock check: ${result.problems.length} problem(s) in ${pairs} pair(s)${npmNote}`);
   lines.push("");
   let current = null;
   for (const problem of result.problems) {
@@ -777,7 +916,11 @@ export function formatReport(result) {
       current = problem.label;
       lines.push(`  ${current}${current === "." ? "" : "/"}`);
     }
-    lines.push(`    - ${problem.message}`);
+    const messageLines = String(problem.message).split("\n");
+    lines.push(`    - ${messageLines[0]}`);
+    for (const line of messageLines.slice(1)) {
+      lines.push(`      ${line}`);
+    }
   }
   lines.push("");
   lines.push("package-lock.json is out of sync with package.json.");
