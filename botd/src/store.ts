@@ -10,6 +10,13 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import type { BotKind, SessionState } from "./protocol.ts";
+import { redact } from "./redact.ts";
+
+// Identity, resume, state and counters must survive persistence exactly.
+const ROUNDTRIP_KEYS = new Set([
+  "sid", "kind", "providerSessionId", "state", "createdAt", "updatedAt",
+  "lastSeq", "ackedSeq", "progressAt",
+]);
 
 export type SessionRecord = {
   sid: string;
@@ -94,7 +101,15 @@ export class SessionStore {
     const dir = path.dirname(this.file);
     fs.mkdirSync(dir, { recursive: true });
     const tmp = path.join(dir, `.${path.basename(this.file)}.tmp-${process.pid}`);
-    const data = `${JSON.stringify({ version: 1, sessions: records }, null, 2)}\n`;
+    const sessions = records.map((record) =>
+      Object.fromEntries(
+        Object.entries(record).map(([key, value]) => [
+          key,
+          ROUNDTRIP_KEYS.has(key) ? value : redact(value),
+        ]),
+      ),
+    );
+    const data = `${JSON.stringify({ version: 1, sessions }, null, 2)}\n`;
     const fd = fs.openSync(tmp, "w");
     try {
       fs.writeFileSync(fd, data);

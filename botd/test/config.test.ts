@@ -153,18 +153,20 @@ test("a home without a value is ignored", () => {
   assert.equal(withoutEnv.home, DEFAULT_CONFIG.home);
 });
 
-test("an empty home hides the environment variable", () => {
-  // `--home=` is a value, not a missing value: the environment variable is
-  // not consulted and the default home is kept.
+test("an empty home falls back to the environment variable", () => {
+  // `--home=` carries no usable value: the environment variable is consulted.
   const config = loadConfig(["--home="], { BOTD_HOME: "/tmp/from-env" });
-  assert.equal(config.home, DEFAULT_CONFIG.home);
+  assert.equal(config.home, "/tmp/from-env");
 });
 
-test("a blank home falls back to the default home", () => {
-  // A home that holds only spaces is not a directory: the default is used.
+test("a blank home falls back to the environment, then the default home", () => {
+  // A home that holds only spaces is not a directory: the environment is used,
+  // and without one the default is used.
   const config = loadConfig(["--home=   "], { BOTD_HOME: "/tmp/from-env" });
-  assert.equal(config.home, defaultBotdHome({}));
-  assert.match(config.home, /\.volto-botd$/);
+  assert.equal(config.home, "/tmp/from-env");
+  const noEnv = loadConfig(["--home=   "], {});
+  assert.equal(noEnv.home, defaultBotdHome({}));
+  assert.match(noEnv.home, /\.volto-botd$/);
 });
 
 test("--store-file is resolved to an absolute path", () => {
@@ -193,9 +195,9 @@ test("a store file without a value is ignored", () => {
   assert.equal(withoutEnv.storeFile, undefined);
 });
 
-test("an empty store file hides the environment variable", () => {
+test("an empty store file falls back to the environment variable", () => {
   const config = loadConfig(["--store-file="], { BOTD_STORE_FILE: "/tmp/from-env.json" });
-  assert.equal(config.storeFile, undefined);
+  assert.equal(config.storeFile, "/tmp/from-env.json");
 });
 
 test("the session table lives in the home directory", () => {
