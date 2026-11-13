@@ -177,6 +177,65 @@ function globMatches(pattern) {
 }
 
 /**
+ * Whether a code block is the layout tree of the README.
+ *
+ * @param {string} code
+ * @returns {boolean}
+ */
+function isLayoutTree(code) {
+  return code.trim().startsWith("probes/") && /[├└]──/.test(code);
+}
+
+/**
+ * The repository paths a code block names, with no list of known directories:
+ * every token that has a slash and ends in a slash, a glob or a file extension.
+ * The runtime directories are git ignored and created by the runner.
+ *
+ * @param {string} code
+ * @returns {string[]}
+ */
+function repoPaths(code) {
+  const ignored = /^probes\/(?:out|\.tmp)(?:\/|$)/;
+  return [...code.matchAll(/(?<![\w./:@-])(?:\.\/)?[\w.-]+(?:\/[\w.*-]+)+\/?/g)]
+    .map((match) => match[0].replace(/^\.\//, ""))
+    .filter((path) => /\/$|\*|\/[^/]*\.[A-Za-z0-9]+$/.test(path))
+    .map((path) => path.replace(/\/+$/, ""))
+    .filter((path) => !ignored.test(path));
+}
+
+/**
+ * The environment variables a markdown text documents: an uppercase name in an
+ * inline code span (optionally written $NAME or NAME=value) or assigned in a code block.
+ *
+ * @param {string} markdown
+ * @returns {string[]}
+ */
+function documentedEnvVars(markdown) {
+  const names = new Set();
+  for (const span of inlineCode(markdown.replace(/```[\s\S]*?```/g, ""))) {
+    const match = span.match(/^\$?([A-Z][A-Z0-9_]*)(?:=.*)?$/);
+    if (match) names.add(match[1]);
+  }
+  for (const block of codeBlocks(markdown)) {
+    for (const match of block.code.matchAll(/(?:^|\s)([A-Z][A-Z0-9_]*)=/gm)) names.add(match[1]);
+    for (const match of block.code.matchAll(/\$\{?([A-Z][A-Z0-9_]*)\}?/g)) names.add(match[1]);
+  }
+  return [...names];
+}
+
+/**
+ * Whether the probe sources read an environment variable.
+ *
+ * @param {string} sources
+ * @param {string} name
+ * @returns {boolean}
+ */
+function readsEnv(sources, name) {
+  if (name.startsWith("VOLTO_PROBE_")) return sources.includes("VOLTO_PROBE_");
+  return new RegExp(`\\benv\\.${name}\\b|\\benv\\[\\s*["'\`]${name}["'\`]`).test(sources);
+}
+
+/**
  * Every production probe source below probes/ (not probes/test) as one text.
  *
  * @returns {string}
@@ -200,14 +259,10 @@ function probeSources() {
 test("every file path named in a README code block exists", () => {
   const blocks = codeBlocks(readme);
   assert.ok(blocks.some((candidate) => /^(?:sh|bash|shell)$/.test(candidate.language)), "the README has no sh code block");
-  // Repository paths in any fenced block, whatever its language, relative to the repository root.
-  // The runtime directories are git ignored and created by the runner.
-  const ignored = /^probes\/(?:out|\.tmp)(?:\/|$)/;
-  const paths = [...blocks.map((block) => block.code).join("\n").matchAll(
-    /(?<![\w./-])(?:probes|botd|client-ui|scripts|tools|python)\/[A-Za-z0-9_.*/-]+/g,
-  )]
-    .map((match) => match[0].replace(/[/.]+$/, ""))
-    .filter((path) => !ignored.test(path));
+  // The layout tree lists names relative to probes/ and has its own tests.
+  const paths = blocks
+    .filter((block) => !isLayoutTree(block.code))
+    .flatMap((block) => repoPaths(block.code));
   assert.ok(paths.length >= 3, "the usage block names no path");
   for (const path of paths) {
     if (path.includes("*")) {
@@ -324,9 +379,8 @@ test("the documented machine protocol matches the probe module", () => {
 
 test("every environment variable named in the README is read by the probes", () => {
   const sources = probeSources();
-  const named = [...new Set(readme.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) ?? [])];
-  for (const name of named) {
-    assert.ok(sources.includes(name), `the README names ${name} but no probe source reads it`);
+  for (const name of documentedEnvVars(readme)) {
+    assert.ok(readsEnv(sources, name), `the README names ${name} but no probe source reads it`);
   }
   // The probes honour a VOLTO_PROBE_<BOT>_BIN override, so the family is known.
   assert.ok(sources.includes("VOLTO_PROBE_"), "the probe sources lost the binary override");
@@ -385,4 +439,12 @@ test.todo("every flag of the runner is documented in the README", () => {
   for (const match of runner.matchAll(/arg === "(--[a-z-]+)"/g)) {
     assert.ok(readme.includes(match[1]), `the README does not mention ${match[1]}`);
   }
+});
+
+test("the extractors find missing paths and environment variables (not vacuous)", () => {
+  assert.deepEqual(repoPaths("node docs/missing.md --x # see other/dir/ and stdin/stdout"), ["docs/missing.md", "other/dir"]);
+  assert.deepEqual(repoPaths('node --test "a/**/*.test.mjs"; ls probes/out/x.json'), ["a/**/*.test.mjs"]);
+  assert.deepEqual(documentedEnvVars("Set `HOME` and `$FOO_BAR` or `BAZ=1`.\n```sh\nQUX=1 node x.mjs\n```\n").sort(), ["BAZ", "FOO_BAR", "HOME", "QUX"].sort());
+  assert.ok(readsEnv("const home = process.env.HOME;", "HOME"));
+  assert.ok(!readsEnv("const home = homedir();", "HOME"));
 });
