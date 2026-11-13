@@ -141,7 +141,7 @@ export class Botd {
       return;
     }
     const lease = this.lease.current;
-    if (!lease) {
+    if (!lease || connection.fence === null || !connection.leaseId) {
       this.emitTo(connection, {
         op: "error",
         code: "no_lease",
