@@ -44,6 +44,8 @@ test("another client takes the lease over and bumps the fence", () => {
   const first = lease.hello("client-a", 500);
   assert.equal(first.ok, true);
   if (!first.ok) return;
+  // Round 2: a takeover is only possible once the first lease expired; while it is ok the second holder gets lease_conflict.
+  now.value = 500;
   const second = lease.hello("client-b", 500);
   assert.equal(second.ok, true);
   if (!second.ok) return;
@@ -57,6 +59,8 @@ test("a renew with a stale fence is rejected", () => {
   const first = lease.hello("client-a", 500);
   assert.equal(first.ok, true);
   if (!first.ok) return;
+  // Round 2: the takeover needs an expired first lease (otherwise lease_conflict).
+  now.value = 500;
   lease.hello("client-b", 500);
   const renew = lease.renew(first.value.leaseId, first.value.fence);
   assert.equal(renew.ok, false);
