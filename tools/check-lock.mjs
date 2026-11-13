@@ -21,14 +21,44 @@
 //     listed in the lock root entry (packages[""]) with a matching range;
 //   * the lock root entry declares exactly the same dependencies;
 //   * every declared dependency has a resolved entry in the lock tree whose
-//     version satisfies the declared range.
+//     version satisfies the declared range;
+//   * every entry of the lock tree ("packages") can resolve the packages it
+//     depends on: its dependencies, its peer dependencies (the ones that are
+//     not optional) and its optional dependencies.
+//
+// The last point matters as much as the first three: a lockfile that lost an
+// entry in the middle of the tree - typically an optional platform package -
+// still describes the root correctly and still passes a root-only check, yet
+// `npm ci` refuses to install from it:
+//
+//   npm error Missing: <pkg> from lock file
 //
 // A mismatch is reported together with the command that repairs it:
 //
 //   run: npm install --package-lock-only --include=optional
 //
+// The comparison above only reads what the two files say. npm itself has the
+// final word, so a second layer runs
+//
+//   npm ci --dry-run --ignore-scripts --no-audit --no-fund
+//
+// in the directory of every pair. A non zero exit code fails the check and
+// npm's own message becomes part of the report. npm 11 prints "npm error",
+// npm 10 and older print "npm ERR!"; both spellings are recognised.
+//
+// The layer talks to the registry, so it is switched off with
+//
+//   CHECK_LOCK_SKIP_NPM=1
+//
+// The unit tests use that switch to stay offline; CI runs the layer.
+//
+// Note that `npm ci --dry-run` still removes the node_modules directory of
+// the checked project and leaves an empty one behind: run the check on a
+// fresh checkout, the way CI does.
+//
 // Node 24, no dependencies: only the standard library is used.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +71,20 @@ const SKIPPED_DIRECTORIES = new Set(["node_modules", "dist", "build", "out", "co
 
 /** The command that brings a lockfile back in sync with its manifest. */
 export const REPAIR_COMMAND = "run: npm install --package-lock-only --include=optional";
+
+/** The arguments of the npm dry run that proves a lockfile installs. */
+export const NPM_CI_ARGS = ["ci", "--dry-run", "--ignore-scripts", "--no-audit", "--no-fund"];
+
+/** The npm dry run, as a command a human can copy. */
+export const NPM_CI_COMMAND = `npm ${NPM_CI_ARGS.join(" ")}`;
+
+/**
+ * The marker npm prints in front of every line of an error message.
+ *
+ * npm 11 and newer print "npm error", npm 10 and older print "npm ERR!".
+ * Both spellings have to be recognised.
+ */
+export const NPM_ERROR_PATTERN = /npm\s+(?:error|ERR!)/i;
 
 // --- semver ----------------------------------------------------------------
 //
@@ -404,8 +448,147 @@ function rangesAgree(declared, locked, resolved) {
 // --- the check -------------------------------------------------------------
 
 /**
- * @typedef {{ section?: string, name?: string, message: string }} Problem
+ * @typedef {{ section?: string, name?: string, package?: string, message: string }} Problem
  */
+
+/**
+ * The dependency sections of a lock entry that npm resolves from.
+ *
+ * `devDependencies` are not among them: npm installs the dev dependencies of
+ * the project itself, not the ones of every package in the tree.
+ */
+const LOCK_ENTRY_SECTIONS = ["dependencies", "optionalDependencies"];
+
+/**
+ * Derives the name of the package a lock entry describes.
+ *
+ * @param {unknown} entry
+ * @param {string} path
+ * @returns {string}
+ */
+function entryName(entry, path) {
+  if (typeof /** @type {any} */ (entry)?.name === "string") {
+    return /** @type {any} */ (entry).name;
+  }
+  const index = path.lastIndexOf("node_modules/");
+  return index === -1 ? path : path.slice(index + "node_modules/".length);
+}
+
+/**
+ * Resolves a dependency the way Node does: the closest node_modules first,
+ * then the node_modules of every ancestor directory.
+ *
+ * @param {Record<string, unknown>} packages
+ * @param {string} fromPath the lock path of the package that needs the dependency
+ * @param {string} name
+ * @returns {string | null} the lock path that provides the dependency
+ */
+export function resolveDependency(packages, fromPath, name) {
+  let prefix = fromPath;
+  for (;;) {
+    const candidate = prefix === "" ? `node_modules/${name}` : `${prefix}/node_modules/${name}`;
+    if (Object.hasOwn(packages, candidate)) return candidate;
+    if (prefix === "") return null;
+    const index = prefix.lastIndexOf("/node_modules/");
+    prefix = index === -1 ? "" : prefix.slice(0, index);
+  }
+}
+
+/**
+ * Collects the dependencies a lock entry declares.
+ *
+ * A peer dependency that the entry marks as optional is skipped: npm does not
+ * install it, so the lock does not have to hold it.
+ *
+ * @param {unknown} entry
+ * @returns {{ section: string, name: string, spec: string }[]}
+ */
+function entryDependencies(entry) {
+  /** @type {{ section: string, name: string, spec: string }[]} */
+  const collected = [];
+
+  for (const section of LOCK_ENTRY_SECTIONS) {
+    const declared = /** @type {any} */ (entry)?.[section];
+    if (!declared || typeof declared !== "object") continue;
+    for (const [name, spec] of Object.entries(declared)) {
+      collected.push({ section, name, spec: String(spec) });
+    }
+  }
+
+  const peers = /** @type {any} */ (entry)?.peerDependencies;
+  const peerMeta = /** @type {any} */ (entry)?.peerDependenciesMeta;
+  if (peers && typeof peers === "object") {
+    for (const [name, spec] of Object.entries(peers)) {
+      if (peerMeta?.[name]?.optional === true) continue;
+      collected.push({ section: "peerDependencies", name, spec: String(spec) });
+    }
+  }
+
+  return collected;
+}
+
+/**
+ * Renders the message for a dependency that no entry of the lock tree
+ * provides.
+ *
+ * @param {string} section
+ * @param {string} name
+ * @param {string} spec
+ * @param {string} owner
+ * @returns {string}
+ */
+function missingEntryMessage(section, name, spec, owner) {
+  const kind =
+    section === "optionalDependencies"
+      ? "an optional dependency"
+      : section === "peerDependencies"
+        ? "a peer dependency"
+        : "a dependency";
+  const note =
+    section === "optionalDependencies"
+      ? " - an optional platform package has to be in the lock even when the current platform does not install it"
+      : "";
+  return (
+    `the lock file has no entry for "${name}@${spec}", ${kind} of "${owner}"; ` +
+    `npm ci fails with "Missing: ${name} from lock file"${note}`
+  );
+}
+
+/**
+ * Checks that every dependency declared by an entry of the lock tree can be
+ * resolved inside that tree.
+ *
+ * The root entry is left out: it is compared with the manifest instead, and
+ * a root dependency that has no entry is reported there.
+ *
+ * @param {unknown} lock
+ * @returns {Problem[]}
+ */
+export function checkLockTree(lock) {
+  const packages = /** @type {Record<string, any>} */ (
+    /** @type {any} */ (lock)?.packages ?? {}
+  );
+  /** @type {Problem[]} */
+  const problems = [];
+
+  for (const [path, entry] of Object.entries(packages)) {
+    if (path === "") continue;
+    const version = typeof entry?.version === "string" ? `@${entry.version}` : "";
+    const owner = `${entryName(entry, path)}${version}`;
+
+    for (const dependency of entryDependencies(entry)) {
+      if (resolveDependency(packages, path, dependency.name)) continue;
+      problems.push({
+        section: dependency.section,
+        name: dependency.name,
+        package: path,
+        message: missingEntryMessage(dependency.section, dependency.name, dependency.spec, owner),
+      });
+    }
+  }
+
+  return problems;
+}
 
 /**
  * Checks one manifest against one lockfile.
@@ -499,7 +682,104 @@ export function checkManifestAgainstLock(manifest, lock) {
     }
   }
 
+  // The root is in sync with the manifest; the rest of the tree has to
+  // resolve on its own.
+  problems.push(...checkLockTree(lock));
+
   return problems;
+}
+
+// --- the npm layer --------------------------------------------------------
+
+/**
+ * @typedef {{ status: number | null, output: string }} NpmResult
+ */
+
+/**
+ * Tells whether the npm layer is switched off.
+ *
+ * The unit tests set CHECK_LOCK_SKIP_NPM=1 so that they never touch a
+ * registry; CI runs the layer.
+ *
+ * @param {Record<string, string | undefined>} [env]
+ * @returns {boolean}
+ */
+export function npmLayerDisabled(env = process.env) {
+  const value = String(env.CHECK_LOCK_SKIP_NPM ?? "").trim().toLowerCase();
+  if (value === "") return false;
+  return value !== "0" && value !== "false" && value !== "no" && value !== "off";
+}
+
+/**
+ * Runs the npm dry run in a directory.
+ *
+ * @param {string} directory
+ * @returns {NpmResult}
+ */
+export function runNpmCi(directory) {
+  const command = process.platform === "win32" ? "npm.cmd" : "npm";
+  const run = spawnSync(command, NPM_CI_ARGS, {
+    cwd: directory,
+    encoding: "utf8",
+    env: { ...process.env, npm_config_update_notifier: "false" },
+  });
+
+  if (run.error) {
+    return {
+      status: null,
+      output: `cannot run ${NPM_CI_COMMAND}: ${run.error.message}`,
+    };
+  }
+
+  const stdout = typeof run.stdout === "string" ? run.stdout : "";
+  const stderr = typeof run.stderr === "string" ? run.stderr : "";
+  return { status: run.status, output: `${stdout}\n${stderr}`.trim() };
+}
+
+/**
+ * Extracts the error message npm printed.
+ *
+ * npm 11 and newer print "npm error ...", npm 10 and older print
+ * "npm ERR! ...". Both spellings are recognised; when neither is found the
+ * first lines of the output are used instead.
+ *
+ * @param {string} output
+ * @returns {string}
+ */
+export function extractNpmError(output) {
+  const text = typeof output === "string" ? output : "";
+  const marked = text
+    .split("\n")
+    .filter((line) => NPM_ERROR_PATTERN.test(line))
+    .map((line) => line.trim());
+
+  if (marked.length > 0) return marked.join("\n");
+
+  const plain = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return plain.slice(0, 5).join("\n");
+}
+
+/**
+ * Runs the npm dry run in a directory and reports what npm said.
+ *
+ * @param {string} directory
+ * @param {(directory: string) => NpmResult} [runner]
+ * @returns {Problem[]}
+ */
+export function checkNpmCi(directory, runner = runNpmCi) {
+  const result = runner(directory);
+  if (result.status === 0) return [];
+
+  const detail = extractNpmError(result.output);
+  const status =
+    result.status === null ? "no exit code" : `exit code ${result.status}`;
+  const message = detail
+    ? `${NPM_CI_COMMAND} failed with ${status}:\n${detail}`
+    : `${NPM_CI_COMMAND} failed with ${status}`;
+  return [{ message }];
 }
 
 /**
@@ -562,10 +842,13 @@ function readJson(path) {
  * Checks every package.json that has a sibling package-lock.json.
  *
  * @param {string} root
- * @returns {{ root: string, pairs: { directory: string, manifestPath: string, lockPath: string }[], problems: (Problem & { label: string })[] }}
+ * @param {{ skipNpm?: boolean, runner?: (directory: string) => NpmResult }} [options]
+ * @returns {{ root: string, pairs: { directory: string, manifestPath: string, lockPath: string }[], problems: (Problem & { label: string })[], npmSkipped: boolean }}
  */
-export function checkRepository(root) {
+export function checkRepository(root, options = {}) {
   const pairs = findLockPairs(root);
+  const skipNpm = options.skipNpm ?? npmLayerDisabled();
+  const runner = options.runner ?? runNpmCi;
   /** @type {(Problem & { label: string })[]} */
   const problems = [];
 
@@ -596,27 +879,36 @@ export function checkRepository(root) {
     for (const problem of checkManifestAgainstLock(manifest, lock)) {
       problems.push({ label, ...problem });
     }
+
+    if (skipNpm) continue;
+
+    for (const problem of checkNpmCi(pair.directory, runner)) {
+      problems.push({ label, ...problem });
+    }
   }
 
-  return { root, pairs, problems };
+  return { root, pairs, problems, npmSkipped: skipNpm };
 }
 
 /**
  * Renders the result of a repository check.
  *
- * @param {{ pairs: unknown[], problems: (Problem & { label: string })[] }} result
+ * @param {{ pairs: unknown[], problems: (Problem & { label: string })[], npmSkipped?: boolean }} result
  * @returns {string}
  */
 export function formatReport(result) {
   const lines = [];
   const pairs = result.pairs.length;
+  const npmNote = result.npmSkipped ? " (npm ci dry run skipped)" : "";
 
   if (result.problems.length === 0) {
-    lines.push(`lock check: ok (${pairs} package.json / package-lock.json pair(s) checked)`);
+    lines.push(
+      `lock check: ok (${pairs} package.json / package-lock.json pair(s) checked${npmNote})`,
+    );
     return `${lines.join("\n")}\n`;
   }
 
-  lines.push(`lock check: ${result.problems.length} problem(s) in ${pairs} pair(s)`);
+  lines.push(`lock check: ${result.problems.length} problem(s) in ${pairs} pair(s)${npmNote}`);
   lines.push("");
   let current = null;
   for (const problem of result.problems) {
@@ -624,7 +916,11 @@ export function formatReport(result) {
       current = problem.label;
       lines.push(`  ${current}${current === "." ? "" : "/"}`);
     }
-    lines.push(`    - ${problem.message}`);
+    const messageLines = String(problem.message).split("\n");
+    lines.push(`    - ${messageLines[0]}`);
+    for (const line of messageLines.slice(1)) {
+      lines.push(`      ${line}`);
+    }
   }
   lines.push("");
   lines.push("package-lock.json is out of sync with package.json.");

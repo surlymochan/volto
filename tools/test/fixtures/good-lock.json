@@ -1,0 +1,58 @@
+{
+  "name": "@example/agent-app",
+  "version": "0.1.0",
+  "lockfileVersion": 3,
+  "packages": {
+    "": {
+      "name": "@example/agent-app",
+      "version": "0.1.0",
+      "dependencies": {
+        "@example/agent": "^1.0.0"
+      }
+    },
+    "node_modules/@example/agent": {
+      "version": "1.0.0",
+      "dependencies": {
+        "@example/agent-core": "^2.0.0",
+        "@example/agent-runtime": "^1.0.0"
+      },
+      "optionalDependencies": {
+        "@example/agent-linux-x64-gnu": "1.0.0",
+        "@example/agent-darwin-arm64": "1.0.0"
+      },
+      "peerDependencies": {
+        "@example/agent-peer": "^3.0.0"
+      }
+    },
+    "node_modules/@example/agent/node_modules/@example/agent-core": {
+      "version": "2.1.0"
+    },
+    "node_modules/@example/agent-runtime": {
+      "version": "1.4.0"
+    },
+    "node_modules/@example/agent-linux-x64-gnu": {
+      "version": "1.0.0",
+      "os": [
+        "linux"
+      ],
+      "cpu": [
+        "x64"
+      ],
+      "optional": true
+    },
+    "node_modules/@example/agent-darwin-arm64": {
+      "version": "1.0.0",
+      "os": [
+        "darwin"
+      ],
+      "cpu": [
+        "arm64"
+      ],
+      "optional": true
+    },
+    "node_modules/@example/agent-peer": {
+      "version": "3.0.1",
+      "peer": true
+    }
+  }
+}
